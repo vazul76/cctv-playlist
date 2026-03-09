@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CCTV Dashboard</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+  <aside id="sidebar">
+    <div class="logo">
+      <i class="fas fa-video"></i>
+      <span>CCTV Manager</span>
+    </div>
+    <nav>
+      <a data-page="dashboard" onclick="navigate('dashboard')">
+        <i class="fas fa-gauge-high"></i>
+        <span>Dashboard</span>
+      </a>
+      <a data-page="playlists" onclick="navigate('playlists')">
+        <i class="fas fa-list-check"></i>
+        <span>Playlists</span>
+      </a>
+      <a data-page="settings" onclick="navigate('settings')">
+        <i class="fas fa-gear"></i>
+        <span>Pengaturan</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="vlc-indicator" id="sidebar-vlc-dot">
+        <span class="dot"></span>
+        <span class="vlc-label">VLC</span>
+      </div>
+    </div>
+  </aside>
+
+  <main id="main">
+
+    <!-- PAGE: SETTINGS -->
+    <div id="page-settings" class="page">
+      <div class="page-header">
+        <div>
+          <h2>Pengaturan</h2>
+          <p class="page-subtitle">Konfigurasi sistem CCTV Dashboard</p>
+        </div>
+      </div>
+      <div class="settings-card">
+        <div class="settings-section">
+          <div class="settings-section-title">
+            <i class="fas fa-rotate"></i>
+            <h3>Auto-Rotate Stream</h3>
+          </div>
+          <p class="settings-desc">Stream VLC akan otomatis berganti ke track berikutnya sesuai interval yang diatur. Fitur ini selalu aktif saat dashboard berjalan.</p>
+          <div class="settings-row">
+            <label>Status</label>
+            <span id="ar-status" class="ar-status-badge"><i class="fas fa-circle-notch fa-spin"></i> Memulai...</span>
+          </div>
+          <div class="settings-row">
+            <label for="ar-interval">Interval ganti stream</label>
+            <div class="settings-interval-ctrl">
+              <input type="number" id="ar-interval" value="30" min="5" max="3600">
+              <span class="sic-unit">detik</span>
+              <button class="btn btn-primary" onclick="applyInterval()">
+                <i class="fas fa-check"></i> Terapkan
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: DASHBOARD -->
+    <div id="page-dashboard" class="page">
+      <div class="page-header">
+        <div>
+          <h2>Dashboard</h2>
+          <p class="page-subtitle">Monitoring dan kontrol stream CCTV</p>
+        </div>
+      </div>
+
+      <div class="now-playing-bar">
+        <div class="np-icon">
+          <i class="fas fa-satellite-dish"></i>
+        </div>
+        <div class="np-info">
+          <div class="np-label">NOW PLAYING — VLC</div>
+          <div class="np-title">-</div>
+          <div class="np-time"></div>
+        </div>
+        <span class="state-badge disconnected">disconnected</span>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <div class="card-icon blue"><i class="fas fa-layer-group"></i></div>
+          <div class="card-body">
+            <div class="label">Total Playlists</div>
+            <div class="value" id="dash-total-playlists">-</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-icon teal"><i class="fas fa-satellite-dish"></i></div>
+          <div class="card-body">
+            <div class="label">Total Streams</div>
+            <div class="value" id="dash-total-tracks">-</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-icon slate"><i class="fas fa-circle-play"></i></div>
+          <div class="card-body">
+            <div class="label">VLC Status</div>
+            <div class="value sm" id="dash-vlc-state">-</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-icon orange"><i class="fas fa-folder-open"></i></div>
+          <div class="card-body">
+            <div class="label">Playlist Aktif</div>
+            <div class="value sm" id="dash-active-playlist">-</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: PLAYLISTS -->
+    <div id="page-playlists" class="page">
+      <div class="page-header">
+        <div>
+          <h2>Playlists</h2>
+          <p class="page-subtitle">Kelola daftar stream CCTV Anda</p>
+        </div>
+        <button class="btn btn-primary" onclick="toggleAddForm()">
+          <i class="fas fa-plus" id="add-form-icon"></i>
+          <span id="add-form-btn-label">Tambah Playlist</span>
+        </button>
+      </div>
+
+      <!-- INLINE ADD FORM -->
+      <div class="inline-add-form" id="add-playlist-form" style="display:none">
+        <div class="iaf-grid">
+          <div class="form-group">
+            <label><i class="fas fa-tag"></i> Nama Playlist <span class="req">*</span></label>
+            <input type="text" id="new-pl-name" placeholder="contoh: CCTV Bantul">
+          </div>
+          <div class="form-group">
+            <label><i class="fas fa-align-left"></i> Deskripsi</label>
+            <input type="text" id="new-pl-desc" placeholder="opsional">
+          </div>
+        </div>
+        <div class="iaf-actions">
+          <button class="btn btn-primary" onclick="submitAddPlaylist()">
+            <i class="fas fa-check"></i> Simpan
+          </button>
+          <button class="btn btn-outline" onclick="toggleAddForm()">
+            <i class="fas fa-xmark"></i> Batal
+          </button>
+        </div>
+      </div>
+
+      <table id="playlist-table">
+        <thead>
+          <tr>
+            <th style="width:40px">#</th>
+            <th>Nama</th>
+            <th>Deskripsi</th>
+            <th style="width:90px">Streams</th>
+            <th style="width:120px">Dibuat</th>
+            <th style="width:180px">Aksi</th>
+          </tr>
+        </thead>
+        <tbody id="playlist-tbody">
+          <tr><td colspan="6" class="tbl-loading">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- PAGE: PLAYLIST DETAIL -->
+    <div id="page-playlist-detail" class="page">
+      <div class="back-btn" onclick="navigate('playlists')">
+        <i class="fas fa-arrow-left"></i> Kembali ke Playlists
+      </div>
+      <div class="detail-topbar">
+        <h2 id="detail-title">Detail Playlist</h2>
+        <button class="btn btn-success" id="detail-load-vlc">
+          <i class="fas fa-play"></i> Load ke VLC
+        </button>
+      </div>
+      <div class="now-playing-bar" style="margin-bottom:24px">
+        <div class="np-icon">
+          <i class="fas fa-satellite-dish"></i>
+        </div>
+        <div class="np-info">
+          <div class="np-label">NOW PLAYING</div>
+          <div class="np-title">-</div>
+        </div>
+        <span class="state-badge disconnected">-</span>
+      </div>
+
+      <div class="section-header">
+        <h3><i class="fas fa-list"></i> Daftar Stream</h3>
+      </div>
+      <table style="margin-bottom:32px">
+        <thead>
+          <tr>
+            <th>Judul</th>
+            <th>URL Stream</th>
+            <th style="width:130px">Aksi</th>
+          </tr>
+        </thead>
+        <tbody id="tracks-tbody"></tbody>
+      </table>
+
+      <div class="section-header">
+        <h3><i class="fas fa-plus"></i> Tambah Stream Baru</h3>
+      </div>
+      <div class="form-box">
+        <div class="form-group">
+          <label><i class="fas fa-tag"></i> Judul <span class="req">*</span></label>
+          <input type="text" id="add-title" placeholder="contoh: Pasar Bantul">
+        </div>
+        <div class="form-group">
+          <label><i class="fas fa-link"></i> URL RTMP / Stream <span class="req">*</span></label>
+          <input type="text" id="add-url" placeholder="rtmp://103.255.15.138:1935/...">
+        </div>
+        <button class="btn btn-primary" onclick="addTrack()">
+          <i class="fas fa-plus"></i> Tambah Stream
+        </button>
+      </div>
+    </div>
+
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/js/app.js"></script>
+</body>
+</html>
