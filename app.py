@@ -129,6 +129,10 @@ def vlc_get(command_params):
 def index():
     return send_from_directory('static', 'index.html')
 
+@app.route('/cctvName')
+def cctv_name_overlay():
+    return send_from_directory('static', 'cctvName.html')
+
 @app.route('/<path:filename>')
 def static_files(filename):
     return send_from_directory('static', filename)
