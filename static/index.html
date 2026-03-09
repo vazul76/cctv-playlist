@@ -12,7 +12,7 @@
   <aside id="sidebar">
     <div class="logo">
       <i class="fas fa-video"></i>
-      <span>CCTV Manager</span>
+      <span>CCTV</span>
     </div>
     <nav>
       <a data-page="dashboard" onclick="navigate('dashboard')">
@@ -132,32 +132,9 @@
           <h2>Playlists</h2>
           <p class="page-subtitle">Kelola daftar stream CCTV Anda</p>
         </div>
-        <button class="btn btn-primary" onclick="toggleAddForm()">
-          <i class="fas fa-plus" id="add-form-icon"></i>
-          <span id="add-form-btn-label">Tambah Playlist</span>
+        <button class="btn btn-primary" onclick="openAddPlaylistModal()">
+          <i class="fas fa-plus"></i> Tambah Playlist
         </button>
-      </div>
-
-      <!-- INLINE ADD FORM -->
-      <div class="inline-add-form" id="add-playlist-form" style="display:none">
-        <div class="iaf-grid">
-          <div class="form-group">
-            <label><i class="fas fa-tag"></i> Nama Playlist <span class="req">*</span></label>
-            <input type="text" id="new-pl-name" placeholder="contoh: CCTV Bantul">
-          </div>
-          <div class="form-group">
-            <label><i class="fas fa-align-left"></i> Deskripsi</label>
-            <input type="text" id="new-pl-desc" placeholder="opsional">
-          </div>
-        </div>
-        <div class="iaf-actions">
-          <button class="btn btn-primary" onclick="submitAddPlaylist()">
-            <i class="fas fa-check"></i> Simpan
-          </button>
-          <button class="btn btn-outline" onclick="toggleAddForm()">
-            <i class="fas fa-xmark"></i> Batal
-          </button>
-        </div>
       </div>
 
       <table id="playlist-table">
@@ -168,7 +145,7 @@
             <th>Deskripsi</th>
             <th style="width:90px">Streams</th>
             <th style="width:120px">Dibuat</th>
-            <th style="width:180px">Aksi</th>
+            <th style="width:130px">Aksi</th>
           </tr>
         </thead>
         <tbody id="playlist-tbody">
@@ -184,9 +161,14 @@
       </div>
       <div class="detail-topbar">
         <h2 id="detail-title">Detail Playlist</h2>
-        <button class="btn btn-success" id="detail-load-vlc">
-          <i class="fas fa-play"></i> Load ke VLC
-        </button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary" onclick="openAddStreamModal()">
+            <i class="fas fa-plus"></i> Tambah Stream
+          </button>
+          <button class="btn btn-success" id="detail-load-vlc">
+            <i class="fas fa-play"></i> Load ke VLC
+          </button>
+        </div>
       </div>
       <div class="now-playing-bar" style="margin-bottom:24px">
         <div class="np-icon">
@@ -212,26 +194,68 @@
         </thead>
         <tbody id="tracks-tbody"></tbody>
       </table>
-
-      <div class="section-header">
-        <h3><i class="fas fa-plus"></i> Tambah Stream Baru</h3>
-      </div>
-      <div class="form-box">
-        <div class="form-group">
-          <label><i class="fas fa-tag"></i> Judul <span class="req">*</span></label>
-          <input type="text" id="add-title" placeholder="contoh: Pasar Bantul">
-        </div>
-        <div class="form-group">
-          <label><i class="fas fa-link"></i> URL RTMP / Stream <span class="req">*</span></label>
-          <input type="text" id="add-url" placeholder="rtmp://103.255.15.138:1935/...">
-        </div>
-        <button class="btn btn-primary" onclick="addTrack()">
-          <i class="fas fa-plus"></i> Tambah Stream
-        </button>
-      </div>
     </div>
 
   </main>
+
+  <!-- MODAL: TAMBAH PLAYLIST -->
+  <div id="modal-add-playlist" class="modal-form-overlay" onclick="_mfOverlayClick('modal-add-playlist',event)">
+    <div class="modal-form-box">
+      <div class="modal-form-header">
+        <h3><i class="fas fa-folder-plus"></i> Tambah Playlist</h3>
+        <button class="modal-form-close" onclick="closeAddPlaylistModal()"><i class="fas fa-xmark"></i></button>
+      </div>
+      <div class="form-group">
+        <label><i class="fas fa-tag"></i> Nama Playlist <span class="req">*</span></label>
+        <input type="text" id="new-pl-name" placeholder="contoh: CCTV Bantul" onkeydown="if(event.key==='Enter')submitAddPlaylist()">
+      </div>
+      <div class="form-group">
+        <label><i class="fas fa-align-left"></i> Deskripsi</label>
+        <input type="text" id="new-pl-desc" placeholder="opsional" onkeydown="if(event.key==='Enter')submitAddPlaylist()">
+      </div>
+      <div class="modal-form-actions">
+        <button class="btn btn-outline" onclick="closeAddPlaylistModal()">Batal</button>
+        <button class="btn btn-primary" onclick="submitAddPlaylist()"><i class="fas fa-check"></i> Simpan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: TAMBAH STREAM -->
+  <div id="modal-add-stream" class="modal-form-overlay" onclick="_mfOverlayClick('modal-add-stream',event)">
+    <div class="modal-form-box">
+      <div class="modal-form-header">
+        <h3><i class="fas fa-satellite-dish"></i> Tambah Stream</h3>
+        <button class="modal-form-close" onclick="closeAddStreamModal()"><i class="fas fa-xmark"></i></button>
+      </div>
+      <div class="form-group">
+        <label><i class="fas fa-tag"></i> Judul <span class="req">*</span></label>
+        <input type="text" id="add-title" placeholder="contoh: Pasar Bantul" onkeydown="if(event.key==='Enter')addTrack()">
+      </div>
+      <div class="form-group">
+        <label><i class="fas fa-link"></i> URL RTMP / Stream <span class="req">*</span></label>
+        <input type="text" id="add-url" placeholder="rtmp://103.255.15.138:1935/..." onkeydown="if(event.key==='Enter')addTrack()">
+      </div>
+      <div class="modal-form-actions">
+        <button class="btn btn-outline" onclick="closeAddStreamModal()">Batal</button>
+        <button class="btn btn-primary" onclick="addTrack()"><i class="fas fa-plus"></i> Tambah</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL KONFIRMASI -->
+  <div id="confirm-modal" class="modal-overlay" onclick="_modalOverlayClick(event)">
+    <div class="modal-box">
+      <div class="modal-icon-wrap" id="cm-icon-wrap">
+        <i id="cm-icon" class="fas fa-question-circle"></i>
+      </div>
+      <h3 id="cm-title">Konfirmasi</h3>
+      <p id="cm-message"></p>
+      <div class="modal-actions">
+        <button class="btn btn-outline" onclick="closeConfirm()">Batal</button>
+        <button class="btn btn-primary" id="cm-confirm">Ya</button>
+      </div>
+    </div>
+  </div>
 
   <div id="toast" class="toast"></div>
   <script src="/js/app.js"></script>

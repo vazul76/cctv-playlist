@@ -1,4 +1,4 @@
-const API = '/api';
+﻿const API = '/api';
 let currentPlaylistId   = null;
 let currentPlaylistName = null;
 let currentLoadedPlaylistName = null;  // playlist yang sedang di-load ke VLC
@@ -19,6 +19,34 @@ function navigate(page, data = {}) {
   if (page === 'settings')        updateArStatus();
 
   if (page === 'playlist-detail') loadPlaylistDetail(data.id, data.name);
+}
+
+// ─── MODAL KONFIRMASI ────────────────────────────────────────
+function showConfirm({ title, message, confirmLabel = 'Ya', confirmClass = 'btn-primary', iconClass = 'fas fa-question-circle', iconType = 'info', onConfirm }) {
+  const modal      = document.getElementById('confirm-modal');
+  const iconWrap   = document.getElementById('cm-icon-wrap');
+  const iconEl     = document.getElementById('cm-icon');
+  const titleEl    = document.getElementById('cm-title');
+  const msgEl      = document.getElementById('cm-message');
+  const confirmBtn = document.getElementById('cm-confirm');
+
+  iconWrap.className   = `modal-icon-wrap ${iconType}`;
+  iconEl.className     = iconClass;
+  titleEl.textContent  = title;
+  msgEl.innerHTML      = message;
+  confirmBtn.className = `btn ${confirmClass}`;
+  confirmBtn.textContent = confirmLabel;
+  confirmBtn.onclick   = () => { closeConfirm(); onConfirm(); };
+
+  modal.classList.add('active');
+}
+
+function closeConfirm() {
+  document.getElementById('confirm-modal').classList.remove('active');
+}
+
+function _modalOverlayClick(e) {
+  if (e.target === document.getElementById('confirm-modal')) closeConfirm();
 }
 
 // ─── TOAST ────────────────────────────────────────────────────
@@ -118,24 +146,31 @@ async function loadDashboard() {
 }
 
 // ─── PLAYLISTS ────────────────────────────────────────────────
-let addFormOpen = false;
+function openAddPlaylistModal() {
+  document.getElementById('new-pl-name').value = '';
+  document.getElementById('new-pl-desc').value = '';
+  document.getElementById('modal-add-playlist').classList.add('active');
+  setTimeout(() => document.getElementById('new-pl-name').focus(), 80);
+}
 
-function toggleAddForm() {
-  addFormOpen = !addFormOpen;
-  const form  = document.getElementById('add-playlist-form');
-  const icon  = document.getElementById('add-form-icon');
-  const label = document.getElementById('add-form-btn-label');
-  if (addFormOpen) {
-    form.style.display = 'block';
-    icon.className     = 'fas fa-xmark';
-    label.textContent  = 'Batal';
-    document.getElementById('new-pl-name')?.focus();
-  } else {
-    form.style.display = 'none';
-    icon.className     = 'fas fa-plus';
-    label.textContent  = 'Tambah Playlist';
-    document.getElementById('new-pl-name').value = '';
-    document.getElementById('new-pl-desc').value = '';
+function closeAddPlaylistModal() {
+  document.getElementById('modal-add-playlist').classList.remove('active');
+}
+
+function openAddStreamModal() {
+  document.getElementById('add-title').value = '';
+  document.getElementById('add-url').value   = '';
+  document.getElementById('modal-add-stream').classList.add('active');
+  setTimeout(() => document.getElementById('add-title').focus(), 80);
+}
+
+function closeAddStreamModal() {
+  document.getElementById('modal-add-stream').classList.remove('active');
+}
+
+function _mfOverlayClick(id, e) {
+  if (e.target === document.getElementById(id)) {
+    document.getElementById(id).classList.remove('active');
   }
 }
 
@@ -180,10 +215,6 @@ async function loadPlaylists() {
               onclick="navigate('playlist-detail', { id: '${p.id}', name: '${escAttr(p.name)}' })">
               <i class="fas fa-folder-open"></i> Buka
             </button>
-            <button class="btn btn-success" style="font-size:0.75rem;padding:5px 10px"
-              onclick="loadToVlc('${p.id}', '${escAttr(p.name)}')">
-              <i class="fas fa-play"></i>
-            </button>
             <button class="btn btn-danger" style="font-size:0.75rem;padding:5px 10px"
               onclick="deletePlaylist('${p.id}')">
               <i class="fas fa-trash-can"></i>
@@ -199,35 +230,56 @@ async function loadPlaylists() {
 }
 
 async function loadToVlc(id, name) {
-  try {
-    const r = await fetch(`${API}/playlists/${id}/load-vlc`, { method: 'POST' });
-    const d = await r.json();
-    if (d.success) {
-      currentLoadedPlaylistName = name || id;
-      showToast('Playlist berhasil di-load ke VLC!');
-      // refresh tampilan jika sedang di halaman playlists
-      const plPage = document.getElementById('page-playlists');
-      if (plPage && plPage.classList.contains('active')) loadPlaylists();
-      // update card dashboard jika aktif
-      const actEl = document.getElementById('dash-active-playlist');
-      if (actEl) actEl.textContent = currentLoadedPlaylistName;
-    } else {
-      showToast('\u274c ' + (d.error || 'Gagal load ke VLC'), '#DC2626');
+  const currentMsg = currentLoadedPlaylistName
+    ? `<br>Playlist aktif saat ini <strong>"${escHtml(currentLoadedPlaylistName)}"</strong> akan dihentikan.`
+    : '';
+
+  showConfirm({
+    title: 'Load ke VLC',
+    message: `Playlist <strong>"${escHtml(name)}"</strong> akan segera diputar di VLC.${currentMsg}`,
+    confirmLabel: 'Load & Putar',
+    confirmClass: 'btn-success',
+    iconClass: 'fas fa-circle-play',
+    iconType: 'success',
+    onConfirm: async () => {
+      try {
+        const r = await fetch(`${API}/playlists/${id}/load-vlc`, { method: 'POST' });
+        const d = await r.json();
+        if (d.success) {
+          currentLoadedPlaylistName = name || id;
+          showToast('Playlist berhasil di-load ke VLC!');
+          const plPage = document.getElementById('page-playlists');
+          if (plPage && plPage.classList.contains('active')) loadPlaylists();
+          const actEl = document.getElementById('dash-active-playlist');
+          if (actEl) actEl.textContent = currentLoadedPlaylistName;
+        } else {
+          showToast('\u274c ' + (d.error || 'Gagal load ke VLC'), '#DC2626');
+        }
+      } catch {
+        showToast('\u274c Tidak bisa konek ke server', '#DC2626');
+      }
     }
-  } catch {
-    showToast('\u274c Tidak bisa konek ke server', '#DC2626');
-  }
+  });
 }
 
 async function deletePlaylist(id) {
-  if (!confirm('Yakin ingin menghapus playlist ini?')) return;
-  try {
-    await fetch(`${API}/playlists/${id}`, { method: 'DELETE' });
-    showToast('Playlist berhasil dihapus');
-    loadPlaylists();
-  } catch {
-    showToast('❌ Gagal menghapus playlist', '#DC2626');
-  }
+  showConfirm({
+    title: 'Hapus Playlist',
+    message: 'Playlist ini beserta semua stream di dalamnya akan dihapus permanen. Tindakan tidak bisa dibatalkan.',
+    confirmLabel: 'Hapus',
+    confirmClass: 'btn-danger',
+    iconClass: 'fas fa-trash-can',
+    iconType: 'danger',
+    onConfirm: async () => {
+      try {
+        await fetch(`${API}/playlists/${id}`, { method: 'DELETE' });
+        showToast('Playlist berhasil dihapus');
+        loadPlaylists();
+      } catch {
+        showToast('❌ Gagal menghapus playlist', '#DC2626');
+      }
+    }
+  });
 }
 
 // ─── ADD PLAYLIST
@@ -250,7 +302,7 @@ async function submitAddPlaylist() {
 
     if (r.ok) {
       showToast(`Playlist "${d.name}" berhasil dibuat!`);
-      toggleAddForm();
+      closeAddPlaylistModal();
       loadPlaylists();
     } else {
       showToast('❌ ' + (d.error || 'Gagal membuat playlist'), '#DC2626');
@@ -353,17 +405,23 @@ async function saveTrack(i) {
 }
 
 async function deleteTrack(i) {
-  if (!confirm('Yakin ingin menghapus stream ini?')) return;
-
-  try {
-    await fetch(`${API}/playlists/${currentPlaylistId}/tracks/${i}`, {
-      method: 'DELETE'
-    });
-    showToast('🗑️ Stream berhasil dihapus');
-    refreshTracks();
-  } catch {
-    showToast('❌ Gagal menghapus stream', '#c0392b');
-  }
+  showConfirm({
+    title: 'Hapus Stream',
+    message: 'Stream ini akan dihapus dari playlist. Tindakan tidak bisa dibatalkan.',
+    confirmLabel: 'Hapus',
+    confirmClass: 'btn-danger',
+    iconClass: 'fas fa-trash-can',
+    iconType: 'danger',
+    onConfirm: async () => {
+      try {
+        await fetch(`${API}/playlists/${currentPlaylistId}/tracks/${i}`, { method: 'DELETE' });
+        showToast('Stream berhasil dihapus');
+        refreshTracks();
+      } catch {
+        showToast('❌ Gagal menghapus stream', '#DC2626');
+      }
+    }
+  });
 }
 
 async function addTrack() {
@@ -385,6 +443,7 @@ async function addTrack() {
     if (r.ok) {
       document.getElementById('add-title').value = '';
       document.getElementById('add-url').value   = '';
+      closeAddStreamModal();
       showToast('✅ Stream berhasil ditambahkan!');
       refreshTracks();
     } else {
