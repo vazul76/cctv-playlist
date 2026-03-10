@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import time
 import requests
 from datetime import datetime
 from xml.etree import ElementTree as ET
@@ -128,6 +129,10 @@ def vlc_get(command_params):
 @app.route('/')
 def index():
     return send_from_directory('static', 'index.html')
+
+@app.route('/cctvName')
+def cctv_name_overlay():
+    return send_from_directory('static', 'cctvName.html')
 
 @app.route('/<path:filename>')
 def static_files(filename):
@@ -261,6 +266,13 @@ def load_vlc(pl_id):
 
         vlc_get({'command': 'pl_empty'})
         vlc_get({'command': 'in_play', 'input': file_uri})
+
+        # Aktifkan loop — cek dulu, toggle hanya jika belum aktif
+        time.sleep(0.4)
+        status = requests.get(f'{VLC_URL}/requests/status.json', auth=VLC_AUTH, timeout=3).json()
+        if not status.get('loop', False):
+            vlc_get({'command': 'pl_loop'})
+
         return jsonify({'success': True, 'message': 'Playlist berhasil di-load ke VLC!'})
     except requests.exceptions.ConnectionError:
         return jsonify({'error': 'Gagal konek ke VLC. Pastikan VLC HTTP API sudah aktif!'}), 503
@@ -274,23 +286,43 @@ def vlc_status():
     try:
         r    = requests.get(f'{VLC_URL}/requests/status.json', auth=VLC_AUTH, timeout=3)
         data = r.json()
-        info = data.get('information', {}).get('category', {}).get('meta', {})
+        categories = data.get('information', {}).get('category', {})
+        meta = categories.get('meta', {})
+
+        fps = resolution = codec = None
+        for val in categories.values():
+            if not isinstance(val, dict):
+                continue
+            if val.get('Type') == 'Video':
+                fps        = val.get('Frame_rate') or val.get('Frame rate')
+                resolution = val.get('Video_resolution') or val.get('Video Resolution')
+                raw_codec  = val.get('Codec', '')
+                # ambil nama pendek dalam kurung, misal "H264 - MPEG-4 AVC (avc1)" → "avc1"
+                if '(' in raw_codec:
+                    codec = raw_codec.split('(')[-1].rstrip(')').strip()
+                else:
+                    codec = raw_codec or None
+
         return jsonify({
-            'connected': True,
-            'state':     data.get('state', 'stopped'),
-            'title':     info.get('title') or info.get('filename') or '(tidak ada judul)',
-            'time':      data.get('time', 0),
-            'length':    data.get('length', 0),
-            'volume':    data.get('volume', 0),
+            'connected':  True,
+            'state':      data.get('state', 'stopped'),
+            'title':      meta.get('title') or meta.get('filename') or '(tidak ada judul)',
+            'time':       data.get('time', 0),
+            'length':     data.get('length', 0),
+            'fps':        fps,
+            'resolution': resolution,
+            'codec':      codec,
         })
     except Exception:
         return jsonify({
-            'connected': False,
-            'state':     'disconnected',
-            'title':     '-',
-            'time':      0,
-            'length':    0,
-            'volume':    0,
+            'connected':   False,
+            'state':       'disconnected',
+            'title':       '-',
+            'time':        0,
+            'length':      0,
+            'fps':        None,
+            'resolution': None,
+            'codec':      None,
         })
 
 # ─── API: VLC NEXT / PREV ───────────────────────────────────

@@ -9,6 +9,23 @@
 </head>
 <body>
 
+  <!-- MOBILE TOP BAR -->
+  <div id="mobile-topbar">
+    <button id="hamburger" onclick="toggleSidebar()" aria-label="Menu">
+      <i class="fas fa-bars"></i>
+    </button>
+    <div class="mobile-logo">
+      <i class="fas fa-video"></i>
+      <span>CCTV</span>
+    </div>
+    <div class="vlc-indicator" id="mobile-vlc-dot">
+      <span class="dot"></span>
+    </div>
+  </div>
+
+  <!-- SIDEBAR BACKDROP -->
+  <div id="sidebar-backdrop" onclick="closeSidebar()"></div>
+
   <aside id="sidebar">
     <div class="logo">
       <i class="fas fa-video"></i>
@@ -26,6 +43,10 @@
       <a data-page="settings" onclick="navigate('settings')">
         <i class="fas fa-gear"></i>
         <span>Pengaturan</span>
+      </a>
+      <a href="/cctvName" target="_blank" onclick="closeSidebar()">
+        <i class="fas fa-camera"></i>
+        <span>CCTV Name</span>
       </a>
     </nav>
 
@@ -81,6 +102,7 @@
         </div>
       </div>
 
+      <!-- NOW PLAYING -->
       <div class="now-playing-bar">
         <div class="np-icon">
           <i class="fas fa-satellite-dish"></i>
@@ -88,11 +110,15 @@
         <div class="np-info">
           <div class="np-label">NOW PLAYING — VLC</div>
           <div class="np-title">-</div>
-          <div class="np-time"></div>
+          <div class="np-progress-wrap">
+            <div class="np-progress-bar"><div class="np-progress-fill" id="np-fill"></div></div>
+            <span class="np-time" id="np-time-dash"></span>
+          </div>
         </div>
         <span class="state-badge disconnected">disconnected</span>
       </div>
 
+      <!-- STAT CARDS -->
       <div class="cards">
         <div class="card">
           <div class="card-icon blue"><i class="fas fa-layer-group"></i></div>
@@ -115,13 +141,30 @@
             <div class="value sm" id="dash-vlc-state">-</div>
           </div>
         </div>
-        <div class="card">
-          <div class="card-icon orange"><i class="fas fa-folder-open"></i></div>
-          <div class="card-body">
-            <div class="label">Playlist Aktif</div>
-            <div class="value sm" id="dash-active-playlist">-</div>
+      </div>
+
+      <!-- BOTTOM ROW: Stream Info + Quick Controls -->
+      <div class="dash-bottom-row">
+
+        <!-- Stream Info -->
+        <div class="dash-panel">
+          <div class="dash-panel-title"><i class="fas fa-film"></i> Info Stream</div>
+          <div class="stream-info-grid">
+            <div class="si-item">
+              <span class="si-label">FPS</span>
+              <span class="si-value" id="si-fps">-</span>
+            </div>
+            <div class="si-item">
+              <span class="si-label">Resolusi</span>
+              <span class="si-value" id="si-res">-</span>
+            </div>
+            <div class="si-item">
+              <span class="si-label">Codec</span>
+              <span class="si-value" id="si-codec">-</span>
+            </div>
           </div>
         </div>
+
       </div>
     </div>
 
@@ -137,6 +180,7 @@
         </button>
       </div>
 
+      <div class="table-wrap">
       <table id="playlist-table">
         <thead>
           <tr>
@@ -152,6 +196,7 @@
           <tr><td colspan="6" class="tbl-loading">Loading...</td></tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <!-- PAGE: PLAYLIST DETAIL -->
@@ -184,7 +229,8 @@
       <div class="section-header">
         <h3><i class="fas fa-list"></i> Daftar Stream</h3>
       </div>
-      <table style="margin-bottom:32px">
+      <div class="table-wrap" style="margin-bottom:32px">
+      <table>
         <thead>
           <tr>
             <th>Judul</th>
@@ -194,6 +240,7 @@
         </thead>
         <tbody id="tracks-tbody"></tbody>
       </table>
+      </div>
     </div>
 
   </main>

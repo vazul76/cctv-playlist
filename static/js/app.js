@@ -1,7 +1,7 @@
 ﻿const API = '/api';
 let currentPlaylistId   = null;
 let currentPlaylistName = null;
-let currentLoadedPlaylistName = null;  // playlist yang sedang di-load ke VLC
+let currentLoadedPlaylistName = localStorage.getItem('activePlaylistName') || null;
 
 // ─── NAVIGASI ─────────────────────────────────────────────────
 function navigate(page, data = {}) {
@@ -19,6 +19,26 @@ function navigate(page, data = {}) {
   if (page === 'settings')        updateArStatus();
 
   if (page === 'playlist-detail') loadPlaylistDetail(data.id, data.name);
+
+  closeSidebar();
+}
+
+function toggleSidebar() {
+  const sidebar  = document.getElementById('sidebar');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  const isOpen   = sidebar.classList.contains('open');
+  if (isOpen) {
+    sidebar.classList.remove('open');
+    backdrop.classList.remove('active');
+  } else {
+    sidebar.classList.add('open');
+    backdrop.classList.add('active');
+  }
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('sidebar-backdrop')?.classList.remove('active');
 }
 
 // ─── MODAL KONFIRMASI ────────────────────────────────────────
@@ -94,28 +114,42 @@ function updateAllNowPlayingBars(d) {
   document.querySelectorAll('.now-playing-bar').forEach(bar => {
     const titleEl = bar.querySelector('.np-title');
     const badgeEl = bar.querySelector('.state-badge');
-    const timeEl  = bar.querySelector('.np-time');
-
     if (titleEl) titleEl.textContent = d.title || '-';
     if (badgeEl) {
       badgeEl.textContent = d.state || 'disconnected';
       badgeEl.className   = `state-badge ${d.state || 'disconnected'}`;
     }
-    if (timeEl) {
-      timeEl.textContent = (d.length > 0)
-        ? `${fmtTime(d.time)} / ${fmtTime(d.length)}`
-        : '';
-    }
   });
 
-  // Update sidebar VLC dot
+  // Progress bar (dashboard only)
+  const fill    = document.getElementById('np-fill');
+  const timeDash = document.getElementById('np-time-dash');
+  if (fill) {
+    const pct = (d.length > 0) ? Math.min(100, (d.time / d.length) * 100) : 0;
+    fill.style.width = pct + '%';
+  }
+  if (timeDash) {
+    timeDash.textContent = (d.length > 0)
+      ? `${fmtTime(d.time)} / ${fmtTime(d.length)}`
+      : (d.connected ? 'Live' : '');
+  }
+
+  // Stream info fields
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val || '-'; };
+  set('si-fps',   d.fps   ? `${parseFloat(d.fps).toFixed(2)} fps` : null);
+  set('si-res',   d.resolution);
+  set('si-codec', d.codec);
+
+  // Sidebar VLC dots (desktop + mobile)
   const dot = document.getElementById('sidebar-vlc-dot');
   if (dot) {
-    if (d.connected && d.state !== 'disconnected') {
-      dot.classList.add('connected');
-    } else {
-      dot.classList.remove('connected');
-    }
+    if (d.connected && d.state !== 'disconnected') dot.classList.add('connected');
+    else dot.classList.remove('connected');
+  }
+  const mobileDot = document.getElementById('mobile-vlc-dot');
+  if (mobileDot) {
+    if (d.connected && d.state !== 'disconnected') mobileDot.classList.add('connected');
+    else mobileDot.classList.remove('connected');
   }
 }
 
@@ -205,7 +239,7 @@ async function loadPlaylists() {
           <td class="tbl-num">${idx + 1}</td>
           <td class="tbl-name">
             ${isActive ? '<span class="active-dot" title="Sedang diputar di VLC"></span>' : ''}
-            ${escHtml(p.name)}
+            <span class="tbl-name-link" onclick="navigate('playlist-detail', { id: '${p.id}', name: '${escAttr(p.name)}' })">${escHtml(p.name)}</span>
           </td>
           <td class="tbl-desc">${escHtml(p.description || '-')}</td>
           <td class="tbl-center">${trackCount}</td>
@@ -247,11 +281,10 @@ async function loadToVlc(id, name) {
         const d = await r.json();
         if (d.success) {
           currentLoadedPlaylistName = name || id;
+          localStorage.setItem('activePlaylistName', currentLoadedPlaylistName);
           showToast('Playlist berhasil di-load ke VLC!');
           const plPage = document.getElementById('page-playlists');
           if (plPage && plPage.classList.contains('active')) loadPlaylists();
-          const actEl = document.getElementById('dash-active-playlist');
-          if (actEl) actEl.textContent = currentLoadedPlaylistName;
         } else {
           showToast('\u274c ' + (d.error || 'Gagal load ke VLC'), '#DC2626');
         }
@@ -503,12 +536,13 @@ function applyInterval() {
 }
 
 function updateArStatus() {
-  const statusEl = document.getElementById('ar-status');
-  if (!statusEl) return;
   const m = Math.floor(arSecondsLeft / 60);
   const s = arSecondsLeft % 60;
   const timeStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
-  statusEl.innerHTML = `<i class="fas fa-circle-play"></i> Ganti dalam ${timeStr}`;
+  const html = `<i class="fas fa-circle-play"></i> Ganti dalam ${timeStr}`;
+
+  const settingsEl = document.getElementById('ar-status');
+  if (settingsEl) settingsEl.innerHTML = html;
 }
 
 // ─── INIT ─────────────────────────────────────────────────────
