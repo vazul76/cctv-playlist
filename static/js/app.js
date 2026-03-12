@@ -20,6 +20,11 @@ function navigate(page, data = {}) {
 
   if (page === 'playlist-detail') loadPlaylistDetail(data.id, data.name);
 
+  // Simpan halaman aktif (kecuali detail — butuh data tambahan)
+  if (page !== 'playlist-detail') {
+    localStorage.setItem('lastPage', page);
+  }
+
   closeSidebar();
 }
 
@@ -547,7 +552,8 @@ function updateArStatus() {
 
 // ─── INIT ─────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  navigate('dashboard');
+  const lastPage = localStorage.getItem('lastPage') || 'dashboard';
+  navigate(lastPage);
   setInterval(fetchVlcStatus, 3000);  // polling VLC tiap 3 detik
   startAutoRotate(30);                // auto-rotate langsung nyala
 });
