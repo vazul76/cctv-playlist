@@ -2,6 +2,7 @@
 let currentPlaylistId   = null;
 let currentPlaylistName = null;
 let currentLoadedPlaylistName = localStorage.getItem('activePlaylistName') || null;
+let _pendingImportTracks = null; // tracks parsed from XSPF, siap diimport saat Simpan
 
 // ─── NAVIGASI ─────────────────────────────────────────────────
 function navigate(page, data = {}) {
@@ -16,7 +17,6 @@ function navigate(page, data = {}) {
 
   if (page === 'dashboard')       loadDashboard();
   if (page === 'playlists')       loadPlaylists();
-  if (page === 'settings')        updateArStatus();
 
   if (page === 'playlist-detail') loadPlaylistDetail(data.id, data.name);
 
@@ -47,21 +47,23 @@ function closeSidebar() {
 }
 
 // ─── MODAL KONFIRMASI ────────────────────────────────────────
-function showConfirm({ title, message, confirmLabel = 'Ya', confirmClass = 'btn-primary', iconClass = 'fas fa-question-circle', iconType = 'info', onConfirm }) {
+function showConfirm({ title, message, confirmLabel = 'Ya', confirmClass = 'btn-primary', iconClass = 'fas fa-question-circle', iconType = 'info', onConfirm, onCancel }) {
   const modal      = document.getElementById('confirm-modal');
   const iconWrap   = document.getElementById('cm-icon-wrap');
   const iconEl     = document.getElementById('cm-icon');
   const titleEl    = document.getElementById('cm-title');
   const msgEl      = document.getElementById('cm-message');
   const confirmBtn = document.getElementById('cm-confirm');
+  const cancelBtn  = document.getElementById('cm-cancel');
 
   iconWrap.className   = `modal-icon-wrap ${iconType}`;
   iconEl.className     = iconClass;
   titleEl.textContent  = title;
   msgEl.innerHTML      = message;
   confirmBtn.className = `btn ${confirmClass}`;
-  confirmBtn.textContent = confirmLabel;
+  confirmBtn.innerHTML = `<i class="${iconClass}"></i> ${confirmLabel}`;
   confirmBtn.onclick   = () => { closeConfirm(); onConfirm(); };
+  cancelBtn.onclick    = () => { closeConfirm(); if (onCancel) onCancel(); };
 
   modal.classList.add('active');
 }
@@ -160,28 +162,20 @@ function updateAllNowPlayingBars(d) {
 
 // ─── DASHBOARD ────────────────────────────────────────────────
 async function loadDashboard() {
-  // VLC status
-  const vlc = await fetchVlcStatus();
+  const [vlc, playlists] = await Promise.all([
+    fetchVlcStatus(),
+    fetch(`${API}/playlists`).then(r => r.json()).catch(() => [])
+  ]);
+
   const stateEl = document.getElementById('dash-vlc-state');
   if (stateEl) stateEl.textContent = vlc?.state || '-';
 
-  // Playlists & total tracks
-  try {
-    const playlists = await (await fetch(`${API}/playlists`)).json();
-    const totalPlEl = document.getElementById('dash-total-playlists');
-    if (totalPlEl) totalPlEl.textContent = playlists.length;
+  const totalPlEl = document.getElementById('dash-total-playlists');
+  if (totalPlEl) totalPlEl.textContent = playlists.length;
 
-    let totalTracks = 0;
-    for (const p of playlists) {
-      try {
-        const tracks = await (await fetch(`${API}/playlists/${p.id}/tracks`)).json();
-        totalTracks += Array.isArray(tracks) ? tracks.length : 0;
-      } catch {}
-    }
-
-    const totalTrEl = document.getElementById('dash-total-tracks');
-    if (totalTrEl) totalTrEl.textContent = totalTracks;
-  } catch {}
+  const totalTracks = playlists.reduce((sum, p) => sum + (p.track_count || 0), 0);
+  const totalTrEl = document.getElementById('dash-total-tracks');
+  if (totalTrEl) totalTrEl.textContent = totalTracks;
 }
 
 // ─── PLAYLISTS ────────────────────────────────────────────────
@@ -194,11 +188,13 @@ function openAddPlaylistModal() {
 
 function closeAddPlaylistModal() {
   document.getElementById('modal-add-playlist').classList.remove('active');
+  _pendingImportTracks = null;
 }
 
 function openAddStreamModal() {
-  document.getElementById('add-title').value = '';
-  document.getElementById('add-url').value   = '';
+  document.getElementById('add-title').value    = '';
+  document.getElementById('add-url').value      = '';
+  document.getElementById('add-duration').value = '30';
   document.getElementById('modal-add-stream').classList.add('active');
   setTimeout(() => document.getElementById('add-title').focus(), 80);
 }
@@ -230,11 +226,7 @@ async function loadPlaylists() {
     }
 
     const rows = await Promise.all(playlists.map(async (p, idx) => {
-      let trackCount = 0;
-      try {
-        const tracks = await (await fetch(`${API}/playlists/${p.id}/tracks`)).json();
-        trackCount = Array.isArray(tracks) ? tracks.length : 0;
-      } catch {}
+      const trackCount = p.track_count ?? 0;
       const date = new Date(p.createdAt).toLocaleDateString('id-ID', {
         day: '2-digit', month: 'short', year: 'numeric'
       });
@@ -256,7 +248,7 @@ async function loadPlaylists() {
             </button>
             <button class="btn btn-danger" style="font-size:0.75rem;padding:5px 10px"
               onclick="deletePlaylist('${p.id}')">
-              <i class="fas fa-trash-can"></i>
+              <i class="fas fa-trash-can"></i> Hapus
             </button>
           </td>
         </tr>`;
@@ -290,6 +282,12 @@ async function loadToVlc(id, name) {
           showToast('Playlist berhasil di-load ke VLC!');
           const plPage = document.getElementById('page-playlists');
           if (plPage && plPage.classList.contains('active')) loadPlaylists();
+
+          // Mulai rotasi per-track berdasarkan durasi masing-masing
+          try {
+            const tracks = await (await fetch(`${API}/playlists/${id}/tracks`)).json();
+            startDurationRotate(tracks);
+          } catch {}
         } else {
           showToast('\u274c ' + (d.error || 'Gagal load ke VLC'), '#DC2626');
         }
@@ -338,16 +336,136 @@ async function submitAddPlaylist() {
     });
     const d = await r.json();
 
-    if (r.ok) {
-      showToast(`Playlist "${d.name}" berhasil dibuat!`);
-      closeAddPlaylistModal();
-      loadPlaylists();
-    } else {
+    if (!r.ok) {
       showToast('❌ ' + (d.error || 'Gagal membuat playlist'), '#DC2626');
+      return;
     }
+
+    // Jika ada tracks dari import XSPF, bulk-import sekarang
+    if (_pendingImportTracks && _pendingImportTracks.length > 0) {
+      try {
+        const br = await fetch(`${API}/playlists/${d.id}/tracks/bulk`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ tracks: _pendingImportTracks })
+        });
+        const bd = await br.json();
+        if (br.ok) {
+          showToast(`✅ Playlist "${d.name}" dibuat dengan ${_pendingImportTracks.length} track!`);
+        } else {
+          showToast(`Playlist dibuat, import gagal: ${bd.error || ''}`, '#e67e22');
+        }
+      } catch {
+        showToast(`Playlist dibuat, tapi import tracks gagal`, '#e67e22');
+      }
+      _pendingImportTracks = null;
+    } else {
+      showToast(`Playlist "${d.name}" berhasil dibuat!`);
+    }
+
+    closeAddPlaylistModal();
+    loadPlaylists();
   } catch {
     showToast('❌ Tidak bisa konek ke server', '#DC2626');
   }
+}
+
+// ─── IMPORT XSPF ──────────────────────────────────────────────
+function triggerXspfImport() {
+  document.getElementById('xspf-file-input').click();
+}
+
+function _onXspfFileSelected(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = ''; // reset agar file yang sama bisa dipilih lagi
+  const reader = new FileReader();
+  reader.onload = (ev) => _processXspfContent(ev.target.result, file.name);
+  reader.readAsText(file);
+}
+
+function _processXspfContent(xmlText, fileName = '') {
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(xmlText, 'application/xml');
+
+  if (doc.querySelector('parsererror')) {
+    showToast('❌ File XSPF tidak valid atau rusak', '#c0392b');
+    return;
+  }
+
+  const ns = 'http://xspf.org/ns/0/';
+
+  // Ambil judul playlist dari <title> di dalam <playlist>
+  const plTitleEl = Array.from(doc.getElementsByTagNameNS(ns, 'title'))
+    .find(el => el.parentElement?.localName === 'playlist');
+  const playlistTitle = plTitleEl?.textContent?.trim() || '';
+
+  // Parse semua track
+  const tracks = [];
+  Array.from(doc.getElementsByTagNameNS(ns, 'track')).forEach((track, i) => {
+    const locEl = track.getElementsByTagNameNS(ns, 'location')[0];
+    const titEl = track.getElementsByTagNameNS(ns, 'title')[0];
+    const durEl = track.getElementsByTagNameNS(ns, 'duration')[0];
+
+    const url      = locEl?.textContent?.trim() || '';
+    const title    = titEl?.textContent?.trim() || '';
+    const duration = durEl ? parseInt(durEl.textContent) : null;
+
+    if (url) {
+      tracks.push({ url, title, duration: isNaN(duration) ? null : duration });
+    }
+  });
+
+  if (!tracks.length) {
+    showToast('❌ Tidak ada track ditemukan dalam file XSPF', '#c0392b');
+    return;
+  }
+
+  // Auto-fill nama playlist: utamakan nama file, fallback ke <title> XSPF
+  const nameInput = document.getElementById('new-pl-name');
+  if (nameInput && !nameInput.value.trim()) {
+    const nameFromFile = fileName.replace(/\.xspf$/i, '').trim();
+    nameInput.value = nameFromFile || playlistTitle;
+  }
+
+  // Cek track tanpa judul
+  const noTitle = tracks.filter(t => !t.title);
+  if (noTitle.length > 0) {
+    const listHtml = noTitle.slice(0, 5)
+      .map(t => `<li style="font-size:0.8em;word-break:break-all;text-align:left">${escHtml(t.url)}</li>`)
+      .join('');
+    const more = noTitle.length > 5 ? `<li style="font-size:0.8em">...dan ${noTitle.length - 5} lainnya</li>` : '';
+
+    showConfirm({
+      title:        'Judul Tidak Lengkap',
+      message:      `<strong>${noTitle.length} track</strong> tidak memiliki judul. Track-track tersebut akan menggunakan nama file dari URL sebagai judul.<ul style="margin:8px 0 0;padding-left:18px">${listHtml}${more}</ul>`,
+      confirmLabel: 'Tetap Import',
+      confirmClass: 'btn-primary',
+      iconClass:    'fas fa-triangle-exclamation',
+      iconType:     'warning',
+      onCancel:     () => closeAddPlaylistModal(),
+      onConfirm:    () => {
+        tracks.forEach((t, i) => {
+          if (!t.title) {
+            try {
+              // Ambil nama file dari URL, buang ekstensi & query string
+              let fname = t.url.split('/').pop().split('?')[0];
+              fname = fname.replace(/\.(mp4|mkv|avi|flv|m3u8|ts)$/i, '').replace(/_/g, ' ').trim();
+              t.title = fname || `Track ${i + 1}`;
+            } catch {
+              t.title = `Track ${i + 1}`;
+            }
+          }
+        });
+        _pendingImportTracks = tracks;
+        showToast(`✅ ${tracks.length} track siap diimport — klik Simpan`);
+      }
+    });
+    return;
+  }
+
+  _pendingImportTracks = tracks;
+  showToast(`✅ ${tracks.length} track siap diimport — klik Simpan`);
 }
 
 // ─── PLAYLIST DETAIL ──────────────────────────────────────────
@@ -370,7 +488,7 @@ async function refreshTracks() {
 
   tbody.innerHTML = `
     <tr>
-      <td colspan="3" style="color:#888;text-align:center;padding:20px">
+      <td colspan="4" style="color:#888;text-align:center;padding:20px">
         Loading...
       </td>
     </tr>`;
@@ -381,20 +499,25 @@ async function refreshTracks() {
     if (!tracks.length) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="3" style="color:#555;text-align:center;padding:30px">
+          <td colspan="4" style="color:#555;text-align:center;padding:30px">
             Belum ada stream. Tambah di form bawah.
           </td>
         </tr>`;
       return;
     }
 
-    tbody.innerHTML = tracks.map((t, i) => `
+    tbody.innerHTML = tracks.map((t, i) => {
+      const durSec = t.duration ? Math.round(t.duration / 1000) : 30;
+      return `
       <tr>
         <td style="min-width:160px">
           <input id="t-title-${i}" value="${escHtml(t.title)}" placeholder="Judul">
         </td>
         <td>
           <input id="t-url-${i}" value="${escHtml(t.url)}" placeholder="rtmp://...">
+        </td>
+        <td style="width:120px">
+          <input type="number" id="t-duration-${i}" value="${durSec}" placeholder="dtk" min="1" style="width:100%">
         </td>
         <td style="white-space:nowrap;width:120px">
           <button class="btn btn-primary"
@@ -408,12 +531,13 @@ async function refreshTracks() {
             <i class="fas fa-trash-can"></i>
           </button>
         </td>
-      </tr>`).join('');
+      </tr>`;
+    }).join('');
 
   } catch {
     tbody.innerHTML = `
       <tr>
-        <td colspan="3" style="color:#c0392b;text-align:center;padding:20px">
+        <td colspan="4" style="color:#c0392b;text-align:center;padding:20px">
           ❌ Gagal memuat daftar stream.
         </td>
       </tr>`;
@@ -421,8 +545,10 @@ async function refreshTracks() {
 }
 
 async function saveTrack(i) {
-  const title = document.getElementById(`t-title-${i}`)?.value || '';
-  const url   = document.getElementById(`t-url-${i}`)?.value   || '';
+  const title    = document.getElementById(`t-title-${i}`)?.value    || '';
+  const url      = document.getElementById(`t-url-${i}`)?.value      || '';
+  const durInput = (document.getElementById(`t-duration-${i}`)?.value || '').trim();
+  const duration = durInput ? Math.round(parseFloat(durInput) * 1000) : null;
 
   if (!title || !url) {
     showToast('❌ Judul dan URL tidak boleh kosong!', '#c0392b');
@@ -433,7 +559,7 @@ async function saveTrack(i) {
     const r = await fetch(`${API}/playlists/${currentPlaylistId}/tracks/${i}`, {
       method:  'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ title, url })
+      body:    JSON.stringify({ title, url, duration })
     });
     if (r.ok) showToast('✅ Stream berhasil diperbarui!');
     else      showToast('❌ Gagal memperbarui stream', '#c0392b');
@@ -463,8 +589,10 @@ async function deleteTrack(i) {
 }
 
 async function addTrack() {
-  const title = (document.getElementById('add-title')?.value || '').trim();
-  const url   = (document.getElementById('add-url')?.value   || '').trim();
+  const title    = (document.getElementById('add-title')?.value    || '').trim();
+  const url      = (document.getElementById('add-url')?.value      || '').trim();
+  const durInput = (document.getElementById('add-duration')?.value || '').trim();
+  const duration = durInput ? Math.round(parseFloat(durInput) * 1000) : null;
 
   if (!title || !url) {
     showToast('❌ Judul dan URL wajib diisi!', '#c0392b');
@@ -475,12 +603,13 @@ async function addTrack() {
     const r = await fetch(`${API}/playlists/${currentPlaylistId}/tracks`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ title, url })
+      body:    JSON.stringify({ title, url, duration })
     });
 
     if (r.ok) {
-      document.getElementById('add-title').value = '';
-      document.getElementById('add-url').value   = '';
+      document.getElementById('add-title').value    = '';
+      document.getElementById('add-url').value      = '';
+      document.getElementById('add-duration').value = '';
       closeAddStreamModal();
       showToast('✅ Stream berhasil ditambahkan!');
       refreshTracks();
@@ -493,67 +622,37 @@ async function addTrack() {
   }
 }
 
-// ─── VLC NEXT / PREV ──────────────────────────────────────────
-async function vlcNext() {
-  try {
-    await fetch(`${API}/vlc/next`, { method: 'POST' });
-  } catch {}
+// ─── ROTASI PER-TRACK (berdasarkan durasi tiap stream) ────────
+let _rotatePlaylist = [];
+let _rotateIndex    = 0;
+let _rotateTimer    = null;
+
+async function _vlcNext() {
+  try { await fetch(`${API}/vlc/next`, { method: 'POST' }); } catch {}
 }
 
-async function vlcPrev() {
-  try {
-    await fetch(`${API}/vlc/prev`, { method: 'POST' });
-  } catch {}
+function startDurationRotate(tracks) {
+  clearTimeout(_rotateTimer);
+  _rotatePlaylist = (tracks || []).filter(t => t.url);
+  _rotateIndex    = 0;
+  if (_rotatePlaylist.length > 1) _scheduleRotate();
 }
 
-// ─── AUTO-ROTATE (selalu aktif, hanya interval yang bisa diubah) ───────────
-let arRotateTimer    = null;
-let arCountdownTimer = null;
-let arSecondsLeft    = 0;
-let arInterval       = 30;
+function _scheduleRotate() {
+  const track = _rotatePlaylist[_rotateIndex];
+  const ms    = track.duration ?? 30000;   // fallback 30 detik
 
-function startAutoRotate(secs) {
-  // Hentikan timer lama
-  clearInterval(arRotateTimer);
-  clearInterval(arCountdownTimer);
-
-  arInterval    = Math.max(5, secs || 30);
-  arSecondsLeft = arInterval;
-  updateArStatus();
-
-  arCountdownTimer = setInterval(() => {
-    arSecondsLeft = Math.max(0, arSecondsLeft - 1);
-    updateArStatus();
-  }, 1000);
-
-  arRotateTimer = setInterval(async () => {
-    await vlcNext();
-    arSecondsLeft = arInterval;
-  }, arInterval * 1000);
-}
-
-function applyInterval() {
-  const input = document.getElementById('ar-interval');
-  const secs  = Math.max(5, parseInt(input.value) || 30);
-  input.value = secs;
-  startAutoRotate(secs);
-  showToast(`Auto-rotate: ganti tiap ${secs} detik`);
-}
-
-function updateArStatus() {
-  const m = Math.floor(arSecondsLeft / 60);
-  const s = arSecondsLeft % 60;
-  const timeStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
-  const html = `<i class="fas fa-circle-play"></i> Ganti dalam ${timeStr}`;
-
-  const settingsEl = document.getElementById('ar-status');
-  if (settingsEl) settingsEl.innerHTML = html;
+  _rotateTimer = setTimeout(async () => {
+    _rotateIndex = (_rotateIndex + 1) % _rotatePlaylist.length;
+    await _vlcNext();
+    _scheduleRotate();
+  }, ms);
 }
 
 // ─── INIT ─────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  const lastPage = localStorage.getItem('lastPage') || 'dashboard';
+  const saved    = localStorage.getItem('lastPage') || 'dashboard';
+  const lastPage = document.getElementById(`page-${saved}`) ? saved : 'dashboard';
   navigate(lastPage);
   setInterval(fetchVlcStatus, 3000);  // polling VLC tiap 3 detik
-  startAutoRotate(30);                // auto-rotate langsung nyala
 });

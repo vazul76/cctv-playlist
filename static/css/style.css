@@ -373,6 +373,7 @@ h3 { font-size: 1rem; font-weight: 600; color: #334155; }
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 8px 16px;
   border-radius: 7px;

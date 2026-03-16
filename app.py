@@ -51,7 +51,7 @@ def xspf_path(playlist_id):
 # ─── HELPER XSPF ─────────────────────────────────────────────
 
 def build_xspf(playlist_name, tracks):
-    """Buat string XML XSPF dari list tracks [{'title': ..., 'url': ...}]"""
+    """Buat string XML XSPF dari list tracks [{'title': ..., 'url': ..., 'duration': ...}]"""
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<playlist version="1" xmlns="http://xspf.org/ns/0/" xmlns:vlc="http://www.videolan.org/vlc/playlist/0">',
@@ -63,6 +63,10 @@ def build_xspf(playlist_name, tracks):
             '    <track>',
             f'      <location>{_esc(t.get("url", ""))}</location>',
             f'      <title>{_esc(t.get("title", ""))}</title>',
+        ]
+        if t.get('duration') is not None:
+            lines.append(f'      <duration>{int(t["duration"])}</duration>')
+        lines += [
             '      <extension application="http://www.videolan.org/vlc/playlist/0">',
             f'        <vlc:id>{i}</vlc:id>',
             '      </extension>',
@@ -81,12 +85,19 @@ def parse_xspf(file_path):
         ns = {'xspf': 'http://xspf.org/ns/0/'}
         tracks = []
         for track in root.findall('.//xspf:track', ns):
-            loc   = track.find('xspf:location', ns)
-            title = track.find('xspf:title', ns)
-            tracks.append({
+            loc      = track.find('xspf:location', ns)
+            title    = track.find('xspf:title', ns)
+            duration = track.find('xspf:duration', ns)
+            t = {
                 'url':   loc.text.strip()   if loc   is not None and loc.text   else '',
                 'title': title.text.strip() if title is not None and title.text else '',
-            })
+            }
+            if duration is not None and duration.text:
+                try:
+                    t['duration'] = int(duration.text.strip())
+                except ValueError:
+                    pass
+            tracks.append(t)
         return tracks
     except Exception:
         return []
@@ -142,7 +153,13 @@ def static_files(filename):
 
 @app.route('/api/playlists', methods=['GET'])
 def get_playlists():
-    return jsonify(read_meta())
+    playlists = read_meta()
+    for p in playlists:
+        try:
+            p['track_count'] = len(parse_xspf(xspf_path(p['id'])))
+        except Exception:
+            p['track_count'] = 0
+    return jsonify(playlists)
 
 @app.route('/api/playlists', methods=['POST'])
 def create_playlist():
@@ -201,9 +218,10 @@ def get_tracks(pl_id):
 
 @app.route('/api/playlists/<pl_id>/tracks', methods=['POST'])
 def add_track(pl_id):
-    data  = request.get_json()
-    title = (data.get('title') or '').strip()
-    url   = (data.get('url')   or '').strip()
+    data     = request.get_json()
+    title    = (data.get('title') or '').strip()
+    url      = (data.get('url')   or '').strip()
+    duration = data.get('duration')
 
     if not title or not url:
         return jsonify({'error': 'Title dan URL wajib diisi'}), 400
@@ -213,7 +231,13 @@ def add_track(pl_id):
         return jsonify({'error': 'Playlist tidak ditemukan'}), 404
 
     tracks = parse_xspf(path)
-    tracks.append({'title': title, 'url': url})
+    track  = {'title': title, 'url': url}
+    if duration is not None:
+        try:
+            track['duration'] = int(duration)
+        except (ValueError, TypeError):
+            pass
+    tracks.append(track)
     save_xspf(pl_id, tracks)
     return jsonify({'success': True, 'tracks': tracks}), 201
 
@@ -229,10 +253,24 @@ def update_track(pl_id, index):
     if index < 0 or index >= len(tracks):
         return jsonify({'error': 'Index tidak valid'}), 404
 
-    tracks[index] = {
-        'title': data.get('title', tracks[index]['title']),
-        'url':   data.get('url',   tracks[index]['url']),
+    existing = tracks[index]
+    updated  = {
+        'title': data.get('title', existing['title']),
+        'url':   data.get('url',   existing['url']),
     }
+    if 'duration' in data:
+        if data['duration'] is not None:
+            try:
+                val = int(data['duration'])
+                if val > 0:
+                    updated['duration'] = val
+            except (ValueError, TypeError):
+                pass
+        # duration: null → tidak disimpan (hapus durasi)
+    elif existing.get('duration') is not None:
+        updated['duration'] = existing['duration']  # preserve
+
+    tracks[index] = updated
     save_xspf(pl_id, tracks)
     return jsonify({'success': True, 'tracks': tracks})
 
@@ -251,6 +289,32 @@ def delete_track(pl_id, index):
     save_xspf(pl_id, tracks)
     return jsonify({'success': True, 'tracks': tracks})
 
+@app.route('/api/playlists/<pl_id>/tracks/bulk', methods=['POST'])
+def bulk_add_tracks(pl_id):
+    path = xspf_path(pl_id)
+    if not os.path.exists(path):
+        return jsonify({'error': 'Playlist tidak ditemukan'}), 404
+
+    data       = request.get_json()
+    new_tracks = data.get('tracks', [])
+
+    tracks = parse_xspf(path)
+    for t in new_tracks:
+        url   = (t.get('url')   or '').strip()
+        title = (t.get('title') or '').strip()
+        if not url:
+            continue
+        track = {'title': title, 'url': url}
+        if t.get('duration') is not None:
+            try:
+                track['duration'] = int(t['duration'])
+            except (ValueError, TypeError):
+                pass
+        tracks.append(track)
+
+    save_xspf(pl_id, tracks)
+    return jsonify({'success': True, 'count': len(tracks)})
+
 # ─── API: LOAD KE VLC ────────────────────────────────────────
 
 @app.route('/api/playlists/<pl_id>/load-vlc', methods=['POST'])
@@ -267,11 +331,13 @@ def load_vlc(pl_id):
         vlc_get({'command': 'pl_empty'})
         vlc_get({'command': 'in_play', 'input': file_uri})
 
-        # Aktifkan loop — cek dulu, toggle hanya jika belum aktif
-        time.sleep(0.4)
+        # Pastikan playlist loop aktif, repeat per-track mati
+        time.sleep(0.6)
         status = requests.get(f'{VLC_URL}/requests/status.json', auth=VLC_AUTH, timeout=3).json()
         if not status.get('loop', False):
-            vlc_get({'command': 'pl_loop'})
+            vlc_get({'command': 'pl_loop'})    # nyalakan playlist loop
+        if status.get('repeat', False):
+            vlc_get({'command': 'pl_repeat'})  # matikan repeat track
 
         return jsonify({'success': True, 'message': 'Playlist berhasil di-load ke VLC!'})
     except requests.exceptions.ConnectionError:

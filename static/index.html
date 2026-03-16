@@ -40,10 +40,6 @@
         <i class="fas fa-list-check"></i>
         <span>Playlists</span>
       </a>
-      <a data-page="settings" onclick="navigate('settings')">
-        <i class="fas fa-gear"></i>
-        <span>Pengaturan</span>
-      </a>
       <a href="/cctvName" target="_blank" onclick="closeSidebar()">
         <i class="fas fa-camera"></i>
         <span>CCTV Name</span>
@@ -59,39 +55,6 @@
   </aside>
 
   <main id="main">
-
-    <!-- PAGE: SETTINGS -->
-    <div id="page-settings" class="page">
-      <div class="page-header">
-        <div>
-          <h2>Pengaturan</h2>
-          <p class="page-subtitle">Konfigurasi sistem CCTV Dashboard</p>
-        </div>
-      </div>
-      <div class="settings-card">
-        <div class="settings-section">
-          <div class="settings-section-title">
-            <i class="fas fa-rotate"></i>
-            <h3>Auto-Rotate Stream</h3>
-          </div>
-          <p class="settings-desc">Stream VLC akan otomatis berganti ke track berikutnya sesuai interval yang diatur. Fitur ini selalu aktif saat dashboard berjalan.</p>
-          <div class="settings-row">
-            <label>Status</label>
-            <span id="ar-status" class="ar-status-badge"><i class="fas fa-circle-notch fa-spin"></i> Memulai...</span>
-          </div>
-          <div class="settings-row">
-            <label for="ar-interval">Interval ganti stream</label>
-            <div class="settings-interval-ctrl">
-              <input type="number" id="ar-interval" value="30" min="5" max="3600">
-              <span class="sic-unit">detik</span>
-              <button class="btn btn-primary" onclick="applyInterval()">
-                <i class="fas fa-check"></i> Terapkan
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
 
     <!-- PAGE: DASHBOARD -->
     <div id="page-dashboard" class="page">
@@ -235,6 +198,7 @@
           <tr>
             <th>Judul</th>
             <th>URL Stream</th>
+            <th style="width:120px;white-space:nowrap">Durasi (detik)</th>
             <th style="width:130px">Aksi</th>
           </tr>
         </thead>
@@ -261,11 +225,15 @@
         <input type="text" id="new-pl-desc" placeholder="opsional" onkeydown="if(event.key==='Enter')submitAddPlaylist()">
       </div>
       <div class="modal-form-actions">
+        <button class="btn btn-outline" onclick="triggerXspfImport()"><i class="fas fa-file-import"></i> Import XSPF</button>
         <button class="btn btn-outline" onclick="closeAddPlaylistModal()">Batal</button>
         <button class="btn btn-primary" onclick="submitAddPlaylist()"><i class="fas fa-check"></i> Simpan</button>
       </div>
     </div>
   </div>
+
+  <!-- hidden file input for XSPF import -->
+  <input type="file" id="xspf-file-input" accept=".xspf" style="display:none" onchange="_onXspfFileSelected(event)">
 
   <!-- MODAL: TAMBAH STREAM -->
   <div id="modal-add-stream" class="modal-form-overlay" onclick="_mfOverlayClick('modal-add-stream',event)">
@@ -281,6 +249,10 @@
       <div class="form-group">
         <label><i class="fas fa-link"></i> URL RTMP / Stream <span class="req">*</span></label>
         <input type="text" id="add-url" placeholder="rtmp://103.255.15.138:1935/..." onkeydown="if(event.key==='Enter')addTrack()">
+      </div>
+      <div class="form-group">
+        <label><i class="fas fa-clock"></i> Durasi <span style="font-weight:normal;color:#888;font-size:0.85em">(detik)</span></label>
+        <input type="number" id="add-duration" placeholder="contoh: 30" min="1" onkeydown="if(event.key==='Enter')addTrack()">
       </div>
       <div class="modal-form-actions">
         <button class="btn btn-outline" onclick="closeAddStreamModal()">Batal</button>
@@ -298,7 +270,7 @@
       <h3 id="cm-title">Konfirmasi</h3>
       <p id="cm-message"></p>
       <div class="modal-actions">
-        <button class="btn btn-outline" onclick="closeConfirm()">Batal</button>
+        <button class="btn btn-outline" id="cm-cancel"><i class="fas fa-xmark"></i> Batal</button>
         <button class="btn btn-primary" id="cm-confirm">Ya</button>
       </div>
     </div>
