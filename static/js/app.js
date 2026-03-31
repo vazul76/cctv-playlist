@@ -266,7 +266,7 @@ async function loadPlaylists() {
           <td class="tbl-date">${fmtDate(p.createdAt)}</td>
           <td class="tbl-date">${fmtDate(p.updatedAt)}</td>
           <td class="tbl-actions">
-            <button class="btn btn-outline" style="font-size:0.75rem;padding:5px 10px"
+            <button class="btn btn-outline btn-edit" style="font-size:0.75rem;padding:5px 10px"
               ${isPlaying ? 'disabled title="Tidak bisa diedit saat sedang diputar di VLC"' : `onclick="openEditPlaylistModal('${p.id}', '${escAttr(p.name)}', '${escAttr(p.description || '')}')"`}>
               <i class="fas fa-pen-to-square"></i> Edit
             </button>

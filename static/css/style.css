@@ -407,13 +407,14 @@ h3 { font-size: 1rem; font-weight: 600; color: #334155; }
   background: transparent;
   border: 1px solid #CBD5E1;
   color: #475569;
-  display: none;
 }
 .btn-outline:hover {
   background: #F8FAFC;
   border-color: #94A3B8;
   box-shadow: 0 2px 6px rgba(0,0,0,0.06);
 }
+
+.btn-edit { display: none; }
 
 /* ══ FORM ═══════════════════════════════════════════════════════ */
 .form-group { margin-bottom: 18px; }
@@ -822,9 +823,8 @@ td input:disabled,
 .tbl-desc    { color: #64748B; }
 .tbl-center  { text-align: center; }
 .tbl-date    { color: #64748B; font-size: 0.82rem; white-space: nowrap; }
-.tbl-actions { white-space: nowrap; }
-.tbl-actions .btn { margin-right: 4px; font-size: 0.78rem; padding: 5px 11px; }
-.tbl-actions .btn:last-child { margin-right: 0; }
+.tbl-actions { white-space: nowrap; display: flex; gap: 4px; align-items: center; }
+.tbl-actions .btn { margin-right: 0; font-size: 0.78rem; padding: 5px 11px; }
 
 /* SEARCH BAR INLINE */
 .search-bar-inline {
