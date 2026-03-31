@@ -17,7 +17,7 @@
         padding: 20px 40px;
         background: #d81e0e;
         border-radius: 8px;
-        width: fit-content;
+        width: 800px;
         max-width: calc(100vw - 32px);
         position: relative;
         overflow: hidden;
@@ -41,11 +41,22 @@
     </div>
 
     <script>
+      function formatTitle(filename) {
+        let name = String(filename || '').trim();
+        if (name.toLowerCase().startsWith('mp4:')) {
+          name = name.slice(4).trim();
+        }
+        if (name.toLowerCase().endsWith('.stream')) {
+          name = name.slice(0, -7);
+        }
+        return name || 'Unknown';
+      }
+
       async function refresh() {
         try {
           const res = await fetch('/api/vlc/status', { cache: 'no-store' });
           const data = await res.json();
-          document.getElementById('title').textContent = data.title || 'Unknown';
+          document.getElementById('title').textContent = formatTitle(data.title);
         } catch (err) {
           document.getElementById('title').textContent = 'Please Wait...';
         }
