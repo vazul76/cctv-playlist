@@ -40,6 +40,14 @@ def write_meta(data):
     with open(META_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
+def update_playlist_timestamp(pl_id):
+    """Update the updatedAt field of a playlist to current time"""
+    meta = read_meta()
+    pl = next((p for p in meta if p['id'] == pl_id), None)
+    if pl:
+        pl['updatedAt'] = datetime.now().isoformat()
+        write_meta(meta)
+
 def xspf_path(playlist_id):
     meta = read_meta()
     pl   = next((p for p in meta if p['id'] == playlist_id), None)
@@ -147,7 +155,11 @@ def cctv_name_overlay():
 
 @app.route('/<path:filename>')
 def static_files(filename):
-    return send_from_directory('static', filename)
+    # File statis (punya ekstensi) → serve langsung dari folder static
+    if '.' in filename.split('/')[-1]:
+        return send_from_directory('static', filename)
+    # SPA route (misal /playlists, /2f3fd123) → serve index.html
+    return send_from_directory('static', 'index.html')
 
 # ─── API: PLAYLISTS ──────────────────────────────────────────
 
@@ -183,7 +195,8 @@ def create_playlist():
         'name':        name,
         'filename':    safe_name,       # ← simpan nama file di meta
         'description': desc,
-        'createdAt':   datetime.now().isoformat()
+        'createdAt':   datetime.now().isoformat(),
+        'updatedAt':   None
     }
 
     # Tulis meta dulu
@@ -196,6 +209,26 @@ def create_playlist():
         f.write(build_xspf(name, []))
 
     return jsonify(new_pl), 201
+
+@app.route('/api/playlists/<pl_id>', methods=['PUT'])
+def update_playlist(pl_id):
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    desc = (data.get('description') or '').strip()
+
+    if not name:
+        return jsonify({'error': 'Nama playlist wajib diisi'}), 400
+
+    meta = read_meta()
+    pl   = next((p for p in meta if p['id'] == pl_id), None)
+    if not pl:
+        return jsonify({'error': 'Playlist tidak ditemukan'}), 404
+
+    pl['name']        = name
+    pl['description'] = desc
+    pl['updatedAt']   = datetime.now().isoformat()
+    write_meta(meta)
+    return jsonify(pl)
 
 @app.route('/api/playlists/<pl_id>', methods=['DELETE'])
 def delete_playlist(pl_id):
@@ -239,6 +272,7 @@ def add_track(pl_id):
             pass
     tracks.append(track)
     save_xspf(pl_id, tracks)
+    update_playlist_timestamp(pl_id)
     return jsonify({'success': True, 'tracks': tracks}), 201
 
 @app.route('/api/playlists/<pl_id>/tracks/<int:index>', methods=['PUT'])
@@ -272,6 +306,7 @@ def update_track(pl_id, index):
 
     tracks[index] = updated
     save_xspf(pl_id, tracks)
+    update_playlist_timestamp(pl_id)
     return jsonify({'success': True, 'tracks': tracks})
 
 @app.route('/api/playlists/<pl_id>/tracks/<int:index>', methods=['DELETE'])
@@ -287,6 +322,7 @@ def delete_track(pl_id, index):
 
     tracks.pop(index)
     save_xspf(pl_id, tracks)
+    update_playlist_timestamp(pl_id)
     return jsonify({'success': True, 'tracks': tracks})
 
 @app.route('/api/playlists/<pl_id>/tracks/bulk', methods=['POST'])
@@ -313,7 +349,31 @@ def bulk_add_tracks(pl_id):
         tracks.append(track)
 
     save_xspf(pl_id, tracks)
+    update_playlist_timestamp(pl_id)
     return jsonify({'success': True, 'count': len(tracks)})
+
+@app.route('/api/playlists/<pl_id>/tracks/move', methods=['POST'])
+def move_track(pl_id):
+    data     = request.get_json() or {}
+    from_idx = data.get('from')
+    to_idx   = data.get('to')
+
+    if from_idx is None or to_idx is None:
+        return jsonify({'error': 'from dan to wajib diisi'}), 400
+
+    path = xspf_path(pl_id)
+    if not os.path.exists(path):
+        return jsonify({'error': 'Playlist tidak ditemukan'}), 404
+
+    tracks = parse_xspf(path)
+    n = len(tracks)
+    if not (0 <= from_idx < n and 0 <= to_idx < n) or from_idx == to_idx:
+        return jsonify({'error': 'Index tidak valid'}), 400
+
+    tracks.insert(to_idx, tracks.pop(from_idx))
+    save_xspf(pl_id, tracks)
+    update_playlist_timestamp(pl_id)
+    return jsonify({'success': True})
 
 # ─── API: LOAD KE VLC ────────────────────────────────────────
 
@@ -372,9 +432,10 @@ def vlc_status():
         return jsonify({
             'connected':  True,
             'state':      data.get('state', 'stopped'),
-            'title':      meta.get('title') or meta.get('filename') or '(tidak ada judul)',
+            'title':      meta.get('title') or meta.get('filename') or '(tidak ada yang diputar)',
             'time':       data.get('time', 0),
             'length':     data.get('length', 0),
+            'fullscreen': bool(data.get('fullscreen', False)),
             'fps':        fps,
             'resolution': resolution,
             'codec':      codec,
@@ -392,6 +453,16 @@ def vlc_status():
         })
 
 # ─── API: VLC NEXT / PREV ───────────────────────────────────
+
+@app.route('/api/vlc/fullscreen', methods=['POST'])
+def vlc_fullscreen():
+    try:
+        vlc_get({'command': 'fullscreen'})
+        return jsonify({'success': True})
+    except requests.exceptions.ConnectionError:
+        return jsonify({'error': 'Gagal konek ke VLC'}), 503
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/vlc/next', methods=['POST'])
 def vlc_next():
@@ -417,4 +488,4 @@ def vlc_prev():
 
 if __name__ == '__main__':
     print('✅ CCTV Dashboard running at http://localhost:3000')
-    app.run(host='0.0.0.0', port=3000, debug=True)
+    app.run(host='0.0.0.0', port=3000, debug=True, use_reloader=False)

@@ -102,7 +102,7 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #475569;
+  background: #fa3403;
   transition: background 0.3s;
 }
 
@@ -155,6 +155,9 @@ h2 { font-size: 1.4rem; font-weight: 700; color: #0F172A; margin-bottom: 4px; }
 h3 { font-size: 1rem; font-weight: 600; color: #334155; }
 
 .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: 14px;
 }
 
@@ -404,6 +407,7 @@ h3 { font-size: 1rem; font-weight: 600; color: #334155; }
   background: transparent;
   border: 1px solid #CBD5E1;
   color: #475569;
+  display: none;
 }
 .btn-outline:hover {
   background: #F8FAFC;
@@ -521,6 +525,13 @@ td input:focus {
   border-color: #1565C0;
   box-shadow: 0 0 0 3px rgba(21,101,192,0.1);
   background: #fff;
+}
+
+td input:disabled,
+.form-group input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: #F1F5F9;
 }
 
 /* ══ BACK BUTTON ════════════════════════════════════════════════ */
@@ -815,8 +826,59 @@ td input:focus {
 .tbl-actions .btn { margin-right: 4px; font-size: 0.78rem; padding: 5px 11px; }
 .tbl-actions .btn:last-child { margin-right: 0; }
 
-.row-active { background: #ffffff !important; }
-.row-active td { border-bottom-color: #ffffff !important; }
+/* SEARCH BAR INLINE */
+.search-bar-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  border-radius: 7px;
+  padding: 6px 12px;
+  width: 200px;
+}
+
+.search-bar-inline i { color: #94A3B8; font-size: 0.85rem; flex-shrink: 0; }
+
+.search-bar-inline input {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 0.85rem;
+  color: #334155;
+  width: 100%;
+}
+
+.search-bar-inline input::placeholder { color: #94A3B8; }
+
+.search-bar-inline:focus-within {
+  border-color: #1565C0;
+  background: #fff;
+}
+
+/* DRAG & DROP */
+#tracks-tbody tr[draggable="true"] {
+  cursor: move;
+  transition: background 0.2s, opacity 0.2s;
+}
+
+#tracks-tbody tr.dragging {
+  opacity: 0.4;
+}
+
+#tracks-tbody tr.drag-over {
+  background: #EFF6FF !important;
+  border-top: 2px solid #1565C0;
+}
+
+.drag-handle {
+  cursor: grab !important;
+  color: #94A3B8;
+}
+
+.drag-handle:hover {
+  color: #1565C0;
+}
 
 /* MODAL FORM (input) */
 .modal-form-overlay {

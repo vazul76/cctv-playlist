@@ -37,7 +37,7 @@
   </head>
   <body>
     <div class="card">
-      <div class="title" id="title">Loading...</div>
+      <div class="title" id="title">Please Wait...</div>
     </div>
 
     <script>
@@ -47,7 +47,7 @@
           const data = await res.json();
           document.getElementById('title').textContent = data.title || 'Unknown';
         } catch (err) {
-          document.getElementById('title').textContent = 'Error';
+          document.getElementById('title').textContent = 'Please Wait...';
         }
       }
 
