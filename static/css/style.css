@@ -880,6 +880,12 @@ td input:disabled,
   color: #1565C0;
 }
 
+/* TRACK MODIFIED INDICATOR */
+.track-modified {
+  background: #FFFBEB !important;
+  border-left: 3px solid #D97706 !important;
+}
+
 /* MODAL FORM (input) */
 .modal-form-overlay {
   position: fixed;

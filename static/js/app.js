@@ -5,8 +5,18 @@ let currentLoadedPlaylistName = localStorage.getItem('activePlaylistName') || nu
 let _pendingImportTracks = null; // tracks parsed from XSPF, siap diimport saat Simpan
 let _skipHashPush = false;
 
+// Track change detection
+let _originalTracks = [];          // Original track state from API
+let _tracksWithChanges = new Set(); // Set of track indices with unsaved changes
+
 // ─── NAVIGASI ─────────────────────────────────────────────────
 function navigate(page, data = {}) {
+  // Check for unsaved track changes when leaving playlist-detail
+  if (currentPlaylistId && _tracksWithChanges.size > 0) {
+    showUnsavedChangesModal(page, data);
+    return; // Don't navigate yet
+  }
+
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('#sidebar nav a').forEach(a => a.classList.remove('active'));
 
@@ -575,6 +585,10 @@ async function refreshTracks() {
   try {
     const tracks = await (await fetch(`${API}/playlists/${currentPlaylistId}/tracks`)).json();
 
+    // Store original tracks for change detection
+    _originalTracks = JSON.parse(JSON.stringify(tracks));
+    _tracksWithChanges.clear();
+
     if (!tracks.length) {
       tbody.innerHTML = `
         <tr>
@@ -598,15 +612,15 @@ async function refreshTracks() {
         ondrop="handleDrop(event, ${i})"
         ondragend="handleDragEnd(event)">
         <td style="min-width:160px">
-          <input id="t-title-${i}" value="${escHtml(t.title)}" placeholder="Judul">
+          <input id="t-title-${i}" value="${escHtml(t.title)}" placeholder="Judul" oninput="detectTrackChange(${i})">
         </td>
         <td>
           <input id="t-url-${i}" value="${escHtml(t.url)}" placeholder="rtmp://..."
-            oninput="toggleDurationByUrl('t-duration-${i}', this.value)">
+            oninput="toggleDurationByUrl('t-duration-${i}', this.value); detectTrackChange(${i})">
         </td>
         <td style="width:120px">
           <input type="number" id="t-duration-${i}" value="${durSec}" placeholder="dtk" min="1"
-            style="width:100%" ${durAttr}>
+            style="width:100%" ${durAttr} oninput="detectTrackChange(${i})">
         </td>
         <td style="white-space:nowrap;width:142px">
           <button class="btn drag-handle" style="font-size:0.75rem;padding:5px 8px;cursor:grab"
@@ -637,6 +651,111 @@ async function refreshTracks() {
   }
 }
 
+// ─── DETECT TRACK CHANGES ──────────────────────────────────────
+function detectTrackChange(index) {
+  if (!_originalTracks[index]) return;
+
+  const currentTitle = (document.getElementById(`t-title-${index}`)?.value || '').trim();
+  const currentUrl = (document.getElementById(`t-url-${index}`)?.value || '').trim();
+  const currentDurInput = (document.getElementById(`t-duration-${index}`)?.value || '').trim();
+  const currentDur = currentDurInput ? Math.round(parseFloat(currentDurInput) * 1000) : null;
+
+  const original = _originalTracks[index];
+  const originalDur = original.duration ?? null;
+
+  const hasChanged = currentTitle !== original.title ||
+                     currentUrl !== original.url ||
+                     currentDur !== originalDur;
+
+  const row = document.querySelector(`#tracks-tbody tr[data-index="${index}"]`);
+  if (!row) return;
+
+  if (hasChanged) {
+    _tracksWithChanges.add(index);
+    row.classList.add('track-modified');
+  } else {
+    _tracksWithChanges.delete(index);
+    row.classList.remove('track-modified');
+  }
+}
+
+// ─── ASYNC SAVE ALL TRACKS ────────────────────────────────────
+async function saveAllTracksAndNavigate(targetPage, targetData) {
+  showToast('Menyimpan perubahan...');
+
+  // Snapshot indices to save (protect against changes during save)
+  const indicesToSave = Array.from(_tracksWithChanges);
+  const totalCount = indicesToSave.length;
+  let successCount = 0;
+
+  try {
+    // Save all tracks sequentially with proper error handling
+    for (const i of indicesToSave) {
+      const title = (document.getElementById(`t-title-${i}`)?.value || '').trim();
+      const url = (document.getElementById(`t-url-${i}`)?.value || '').trim();
+      const durInput = (document.getElementById(`t-duration-${i}`)?.value || '').trim();
+      const duration = durInput ? Math.round(parseFloat(durInput) * 1000) : null;
+
+      try {
+        const r = await fetch(`${API}/playlists/${currentPlaylistId}/tracks/${i}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, url, duration })
+        });
+
+        if (r.ok) {
+          // Update original and clear flag only if successful
+          _originalTracks[i] = { title, url, duration };
+          _tracksWithChanges.delete(i);
+          successCount++;
+        }
+      } catch (e) {
+        // Network error, continue to next
+      }
+    }
+
+    const failCount = totalCount - successCount;
+
+    if (failCount === 0) {
+      // All successful
+      showToast(`✅ Semua ${successCount} perubahan berhasil disimpan!`);
+    } else if (successCount > 0) {
+      // Partial success
+      showToast(`⚠️ ${successCount} dari ${totalCount} perubahan tersimpan`, '#e67e22');
+    } else {
+      // All failed
+      showToast(`❌ Gagal menyimpan semua perubahan`, '#DC2626');
+      return; // Don't navigate if all failed
+    }
+
+    navigate(targetPage, targetData);
+  } catch (e) {
+    showToast('❌ Error: ' + (e?.message || 'Tidak diketahui'), '#DC2626');
+  }
+}
+
+// ─── UNSAVED CHANGES MODAL ────────────────────────────────────
+function showUnsavedChangesModal(targetPage, targetData) {
+  const changedList = [..._tracksWithChanges].map(i => {
+    const title = document.getElementById(`t-title-${i}`)?.value || 'Untitled';
+    const url = document.getElementById(`t-url-${i}`)?.value || '-';
+    return `<li style="font-size:0.85em;margin-bottom:6px"><strong>${escHtml(title)}</strong><br><span style="color:#666;font-size:0.8em">${escHtml(url.substring(0, 60))}${url.length > 60 ? '...' : ''}</span></li>`;
+  }).join('');
+
+  const message = `<strong>${_tracksWithChanges.size} perubahan</strong> akan hilang jika tidak disimpan:<ul style="margin:8px 0 0 0;padding-left:18px;text-align:left">${changedList}</ul><br>Pilih <strong>Simpan & Keluar</strong> untuk menyimpan sebelum kembali ke playlists.`;
+
+  showConfirm({
+    title: 'Perubahan Belum Disimpan',
+    message: message,
+    confirmLabel: 'Simpan & Keluar',
+    confirmClass: 'btn-primary',
+    iconClass: 'fas fa-floppy-disk',
+    iconType: 'warning',
+    onConfirm: () => saveAllTracksAndNavigate(targetPage, targetData),
+    onCancel: () => {} // Just close, stay on page
+  });
+}
+
 async function saveTrack(i) {
   const title    = document.getElementById(`t-title-${i}`)?.value    || '';
   const url      = document.getElementById(`t-url-${i}`)?.value      || '';
@@ -654,7 +773,14 @@ async function saveTrack(i) {
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ title, url, duration })
     });
-    if (r.ok) showToast('✅ Stream berhasil diperbarui!');
+    if (r.ok) {
+      showToast('✅ Stream berhasil diperbarui!');
+      // Update original tracks and clear modified flag
+      _originalTracks[i] = { title, url, duration };
+      _tracksWithChanges.delete(i);
+      const row = document.querySelector(`#tracks-tbody tr[data-index="${i}"]`);
+      if (row) row.classList.remove('track-modified');
+    }
     else      showToast('❌ Gagal memperbarui stream', '#c0392b');
   } catch {
     showToast('❌ Tidak bisa konek ke server', '#c0392b');
