@@ -1,7 +1,8 @@
 ﻿const API = '/api';
 let currentPlaylistId   = null;
 let currentPlaylistName = null;
-let currentLoadedPlaylistName = localStorage.getItem('activePlaylistName') || null;
+let lastDetailPlaylistId = localStorage.getItem('lastDetailPlaylistId') || null;
+let lastDetailPlaylistName = localStorage.getItem('lastDetailPlaylistName') || null;
 let _pendingImportTracks = null; // tracks parsed from XSPF, siap diimport saat Simpan
 let _skipHashPush = false;
 
@@ -12,7 +13,9 @@ let _tracksWithChanges = new Set(); // Set of track indices with unsaved changes
 // ─── NAVIGASI ─────────────────────────────────────────────────
 function navigate(page, data = {}) {
   // Check for unsaved track changes when leaving playlist-detail
-  if (currentPlaylistId && _tracksWithChanges.size > 0) {
+  const detailPageActive = document.getElementById('page-playlist-detail')?.classList.contains('active');
+  const leavingDetailPage = detailPageActive && page !== 'playlist-detail';
+  if (leavingDetailPage && currentPlaylistId && _tracksWithChanges.size > 0) {
     showUnsavedChangesModal(page, data);
     return; // Don't navigate yet
   }
@@ -70,7 +73,7 @@ function closeSidebar() {
 }
 
 // ─── MODAL KONFIRMASI ────────────────────────────────────────
-function showConfirm({ title, message, confirmLabel = 'Ya', confirmClass = 'btn-primary', iconClass = 'fas fa-question-circle', iconType = 'info', onConfirm, onCancel }) {
+function showConfirm({ title, message, confirmLabel = 'Ya', confirmClass = 'btn-primary', iconClass = 'fas fa-question-circle', iconType = 'info', onConfirm, onCancel, hideCancel = false }) {
   const modal      = document.getElementById('confirm-modal');
   const iconWrap   = document.getElementById('cm-icon-wrap');
   const iconEl     = document.getElementById('cm-icon');
@@ -87,12 +90,14 @@ function showConfirm({ title, message, confirmLabel = 'Ya', confirmClass = 'btn-
   confirmBtn.innerHTML = `<i class="${iconClass}"></i> ${confirmLabel}`;
   confirmBtn.onclick   = () => { closeConfirm(); onConfirm(); };
   cancelBtn.onclick    = () => { closeConfirm(); if (onCancel) onCancel(); };
+  cancelBtn.style.display = hideCancel ? 'none' : '';
 
   modal.classList.add('active');
 }
 
 function closeConfirm() {
   document.getElementById('confirm-modal').classList.remove('active');
+  document.getElementById('cm-cancel').style.display = '';
 }
 
 function _modalOverlayClick(e) {
@@ -128,72 +133,39 @@ function escAttr(s) {
   return String(s || '').replace(/'/g, "\\'");
 }
 
-// ─── VLC STATUS ───────────────────────────────────────────────
-async function fetchVlcStatus() {
-  try {
-    const r = await fetch(`${API}/vlc/status`);
-    const d = await r.json();
-    updateAllNowPlayingBars(d);
-    return d;
-  } catch {
-    updateAllNowPlayingBars({ connected: false, state: 'disconnected', title: '-' });
-  }
+function normalizeRtmpPlaylistName(name) {
+  return String(name || '')
+    .trim()
+    .replace(/[\\/*?:"<>|]/g, '')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'playlist';
 }
 
-function updateAllNowPlayingBars(d) {
-  document.querySelectorAll('.now-playing-bar').forEach(bar => {
-    const titleEl = bar.querySelector('.np-title');
-    const badgeEl = bar.querySelector('.state-badge');
-    if (titleEl) titleEl.textContent = d.title || '-';
-    if (badgeEl) {
-      badgeEl.textContent = d.state || 'disconnected';
-      badgeEl.className   = `state-badge ${d.state || 'disconnected'}`;
-    }
-  });
+function buildPlaylistRtmpUrl(name) {
+  return `rtmp://jitv:jitv@103.255.15.138:1935/live/${normalizeRtmpPlaylistName(name)}`;
+}
 
-  // VLC Status card (dashboard)
-  const stateEl = document.getElementById('dash-vlc-state');
-  if (stateEl) stateEl.textContent = d.state || '-';
-  const fill    = document.getElementById('np-fill');
-  const timeDash = document.getElementById('np-time-dash');
-  if (fill) {
-    const pct = (d.length > 0) ? Math.min(100, (d.time / d.length) * 100) : 0;
-    fill.style.width = pct + '%';
-  }
-  if (timeDash) {
-    timeDash.textContent = (d.length > 0)
-      ? `${fmtTime(d.time)} / ${fmtTime(d.length)}`
-      : (d.connected ? 'Live' : '');
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
   }
 
-  // Stream info fields
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val || '-'; };
-  set('si-fps',   d.fps   ? `${parseFloat(d.fps).toFixed(2)} fps` : null);
-  set('si-res',   d.resolution);
-  set('si-codec', d.codec);
-
-  // Sidebar VLC dots (desktop + mobile)
-  const dot = document.getElementById('sidebar-vlc-dot');
-  if (dot) {
-    if (d.connected && d.state !== 'disconnected') dot.classList.add('connected');
-    else dot.classList.remove('connected');
-  }
-  const mobileDot = document.getElementById('mobile-vlc-dot');
-  if (mobileDot) {
-    if (d.connected && d.state !== 'disconnected') mobileDot.classList.add('connected');
-    else mobileDot.classList.remove('connected');
-  }
+  const temp = document.createElement('textarea');
+  temp.value = text;
+  temp.setAttribute('readonly', 'true');
+  temp.style.position = 'fixed';
+  temp.style.left = '-9999px';
+  document.body.appendChild(temp);
+  temp.select();
+  document.execCommand('copy');
+  document.body.removeChild(temp);
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────
 async function loadDashboard() {
-  const [vlc, playlists] = await Promise.all([
-    fetchVlcStatus(),
-    fetch(`${API}/playlists`).then(r => r.json()).catch(() => [])
-  ]);
-
-  const stateEl = document.getElementById('dash-vlc-state');
-  if (stateEl) stateEl.textContent = vlc?.state || '-';
+  const playlists = await fetch(`${API}/playlists`).then(r => r.json()).catch(() => []);
 
   const totalPlEl = document.getElementById('dash-total-playlists');
   if (totalPlEl) totalPlEl.textContent = playlists.length;
@@ -201,6 +173,10 @@ async function loadDashboard() {
   const totalTracks = playlists.reduce((sum, p) => sum + (p.track_count || 0), 0);
   const totalTrEl = document.getElementById('dash-total-tracks');
   if (totalTrEl) totalTrEl.textContent = totalTracks;
+
+  const totalActiveRtmp = playlists.filter(p => (p.rtmpStatus || 'pause') === 'play').length;
+  const activeRtmpEl = document.getElementById('dash-active-rtmp');
+  if (activeRtmpEl) activeRtmpEl.textContent = totalActiveRtmp;
 }
 
 // ─── PLAYLISTS ────────────────────────────────────────────────
@@ -225,12 +201,115 @@ function openAddStreamModal() {
   setTimeout(() => document.getElementById('add-title').focus(), 80);
 }
 
+function openPlayRtmpModal(id, name, trackCount) {
+  const modal = document.getElementById('modal-play-rtmp');
+  const idEl = document.getElementById('play-rtmp-id');
+  const nameEl = document.getElementById('play-rtmp-name');
+  const trackCountEl = document.getElementById('play-rtmp-track-count');
+  const previewEl = document.getElementById('play-rtmp-preview');
+  if (!modal || !idEl || !nameEl || !trackCountEl || !previewEl) return;
+
+  idEl.value = id;
+  nameEl.value = name;
+  trackCountEl.value = String(trackCount || 0);
+  previewEl.textContent = buildPlaylistRtmpUrl(name);
+  modal.classList.add('active');
+}
+
+function closePlayRtmpModal() {
+  document.getElementById('modal-play-rtmp')?.classList.remove('active');
+}
+
+async function updatePlaylistRtmpStatus(id, status) {
+  try {
+    const r = await fetch(`${API}/playlists/${id}/rtmp-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status })
+    });
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function pauseRtmpPlaylist(id, name) {
+  const result = await updatePlaylistRtmpStatus(id, 'pause');
+  if (result && !result.error) {
+    showToast(`⏸ RTMP "${name}" dijeda`);
+    loadPlaylists();
+  } else {
+    showToast('❌ Gagal mengubah status RTMP', '#DC2626');
+  }
+}
+
+async function submitPlayRtmp(mode) {
+  const id = document.getElementById('play-rtmp-id')?.value;
+  const name = document.getElementById('play-rtmp-name')?.value || '';
+  const trackCount = parseInt(document.getElementById('play-rtmp-track-count')?.value || '0', 10);
+  if (!id || !name) return;
+
+  if (mode === 'quad' && (trackCount < 4 || trackCount % 4 !== 0)) {
+    showConfirm({
+      title: 'Peringatan Mode 4 Channel',
+      message: `Jumlah stream saat ini <strong>${trackCount}</strong>. Mode 4 Channel idealnya menggunakan kelipatan 4 (4, 8, 12, dst).`,
+      confirmLabel: 'Lanjutkan',
+      confirmClass: 'btn-primary',
+      iconClass: 'fas fa-triangle-exclamation',
+      iconType: 'warning',
+      onConfirm: () => submitPlayRtmpConfirmed(mode, id, name)
+    });
+    return;
+  }
+
+  await submitPlayRtmpConfirmed(mode, id, name);
+}
+
+async function submitPlayRtmpConfirmed(mode, id, name) {
+
+  const rtmpUrl = buildPlaylistRtmpUrl(name);
+
+  try {
+    await copyTextToClipboard(rtmpUrl);
+    const updated = await updatePlaylistRtmpStatus(id, 'play');
+    if (!updated || updated.error) {
+      showToast('❌ Gagal mengubah status RTMP', '#DC2626');
+      return;
+    }
+    closePlayRtmpModal();
+    showConfirm({
+      title: 'RTMP Tersalin',
+      message: `Link RTMP untuk mode <strong>${mode === 'quad' ? '4 Channel' : 'Per Stream'}</strong> sudah tersalin ke clipboard.<br><br><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;text-align:left;word-break:break-all;font-size:0.85rem;color:#0F172A">${escHtml(rtmpUrl)}</div>`,
+      confirmLabel: 'Oke',
+      confirmClass: 'btn-primary',
+      iconClass: 'fas fa-circle-check',
+      iconType: 'success',
+      hideCancel: true,
+      onConfirm: () => {}
+    });
+    showToast('✅ Link RTMP tersalin ke clipboard');
+    loadPlaylists();
+  } catch {
+    showToast('❌ Gagal menyalin link RTMP', '#DC2626');
+  }
+}
+
+function downloadPlaylistXspf(id) {
+  const url = `${API}/playlists/${id}/download`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = '';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 function toggleDurationByUrl(inputId, url) {
   const el = document.getElementById(inputId);
   if (!el) return;
   const isVod = /\.mp4/i.test(url);
   el.disabled = isVod;
-  el.title    = isVod ? 'File MP4 — durasi otomatis dari VLC, tidak bisa diubah' : '';
+  el.title    = isVod ? 'File MP4 — durasi mengikuti file sumber, tidak bisa diubah' : '';
 }
 
 function closeAddStreamModal() {
@@ -261,7 +340,8 @@ async function loadPlaylists() {
 
     const rows = playlists.map((p, idx) => {
       const trackCount  = p.track_count ?? 0;
-      const isPlaying   = currentLoadedPlaylistName === p.name;
+      const rtmpStatus   = (p.rtmpStatus || 'pause').toLowerCase();
+      const isPlaying    = rtmpStatus === 'play';
       const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('id-ID', {
         day: '2-digit', month: 'short', year: 'numeric'
       }) : '-';
@@ -277,16 +357,20 @@ async function loadPlaylists() {
           <td class="tbl-date">${fmtDate(p.updatedAt)}</td>
           <td class="tbl-actions">
             <button class="btn btn-outline btn-edit" style="font-size:0.75rem;padding:5px 10px"
-              ${isPlaying ? 'disabled title="Tidak bisa diedit saat sedang diputar di VLC"' : `onclick="openEditPlaylistModal('${p.id}', '${escAttr(p.name)}', '${escAttr(p.description || '')}')"`}>
+              onclick="openEditPlaylistModal('${p.id}', '${escAttr(p.name)}', '${escAttr(p.description || '')}')">
               <i class="fas fa-pen-to-square"></i> Edit
             </button>
-            <button class="btn btn-primary" style="font-size:0.75rem;padding:5px 10px"
-              onclick="navigate('playlist-detail', { id: '${p.id}', name: '${escAttr(p.name)}' })">
-              <i class="fas fa-folder-open"></i> Buka
+            <button class="btn ${isPlaying ? 'btn-outline' : 'btn-success'}" style="font-size:0.75rem;padding:5px 10px"
+              onclick="${isPlaying ? `pauseRtmpPlaylist('${p.id}', '${escAttr(p.name)}')` : `openPlayRtmpModal('${p.id}', '${escAttr(p.name)}', ${trackCount})`}">
+              <i class="fas ${isPlaying ? 'fa-pause' : 'fa-circle-play'}"></i> ${isPlaying ? 'Pause RTMP' : 'Play RTMP'}
+            </button>
+            <button class="btn btn-outline" style="font-size:0.75rem;padding:5px 10px"
+              onclick="downloadPlaylistXspf('${p.id}')">
+              <i class="fas fa-file-arrow-down"></i> Download xspf
             </button>
             <button class="btn btn-danger" style="font-size:0.75rem;padding:5px 8px"
               onclick="deletePlaylist('${p.id}')">
-              <i class="fas fa-trash-can"></i> Hapus
+              <i class="fas fa-trash-can"></i> Delete
             </button>
           </td>
         </tr>`;
@@ -329,11 +413,6 @@ async function submitEditPlaylist() {
     });
     const d = await r.json();
     if (r.ok) {
-      // Sync nama yang sedang aktif jika playlist ini sedang diplay
-      if (currentLoadedPlaylistName && currentPlaylistId === id) {
-        currentLoadedPlaylistName = d.name;
-        localStorage.setItem('activePlaylistName', d.name);
-      }
       showToast(`✅ Playlist berhasil diperbarui!`);
       closeEditPlaylistModal();
       loadPlaylists();
@@ -343,48 +422,6 @@ async function submitEditPlaylist() {
   } catch (e) {
     showToast('❌ ' + (e?.message || 'Tidak bisa konek ke server'), '#DC2626');
   }
-}
-
-async function ensureVlcFullscreen() {
-  try {
-    const st = await fetchVlcStatus();
-    if (st && !st.fullscreen) {
-      await fetch(`${API}/vlc/fullscreen`, { method: 'POST' });
-    }
-  } catch {}
-}
-
-async function loadToVlc(id, name) {
-  showConfirm({
-    title: 'Load ke VLC',
-    message: `Playlist <strong>"${escHtml(name)}"</strong> akan segera diputar dan dimulai dari awal di VLC. Playlist yang sedang diputar akan dihentikan.`,
-    confirmLabel: 'Load & Putar',
-    confirmClass: 'btn-success',
-    iconClass: 'fas fa-circle-play',
-    iconType: 'success',
-    onConfirm: async () => {
-      try {
-        const r = await fetch(`${API}/playlists/${id}/load-vlc`, { method: 'POST' });
-        const d = await r.json();
-        if (d.success) {
-          showToast('Playlist berhasil di-load ke VLC!');
-          const plPage = document.getElementById('page-playlists');
-          if (plPage && plPage.classList.contains('active')) loadPlaylists();
-
-          try {
-            const tracks = await (await fetch(`${API}/playlists/${id}/tracks`)).json();
-            startDurationRotate(tracks);
-          } catch {}
-
-          setTimeout(ensureVlcFullscreen, 1500);
-        } else {
-          showToast('\u274c ' + (d.error || 'Gagal load ke VLC'), '#DC2626');
-        }
-      } catch {
-        showToast('\u274c Tidak bisa konek ke server', '#DC2626');
-      }
-    }
-  });
 }
 
 async function deletePlaylist(id) {
@@ -561,12 +598,13 @@ function _processXspfContent(xmlText, fileName = '') {
 async function loadPlaylistDetail(id, name) {
   currentPlaylistId   = id;
   currentPlaylistName = name;
+  lastDetailPlaylistId = id;
+  lastDetailPlaylistName = name;
+  localStorage.setItem('lastDetailPlaylistId', id);
+  localStorage.setItem('lastDetailPlaylistName', name);
 
   const titleEl = document.getElementById('detail-title');
   if (titleEl) titleEl.textContent = name;
-
-  const loadBtn = document.getElementById('detail-load-vlc');
-  if (loadBtn) loadBtn.onclick = () => loadToVlc(id, name);
 
   await refreshTracks();
 }
@@ -603,7 +641,7 @@ async function refreshTracks() {
       const durSec  = t.duration ? Math.round(t.duration / 1000) : 30;
       const isVod   = /\.mp4/i.test(t.url);
       const durAttr = isVod
-        ? 'disabled title="File MP4 — durasi otomatis dari VLC, tidak bisa diubah"'
+        ? 'disabled title="File MP4 — durasi mengikuti file sumber, tidak bisa diubah"'
         : '';
       return `
       <tr draggable="true" data-index="${i}"
@@ -742,7 +780,7 @@ function showUnsavedChangesModal(targetPage, targetData) {
     return `<li style="font-size:0.85em;margin-bottom:6px"><strong>${escHtml(title)}</strong><br><span style="color:#666;font-size:0.8em">${escHtml(url.substring(0, 60))}${url.length > 60 ? '...' : ''}</span></li>`;
   }).join('');
 
-  const message = `<strong>${_tracksWithChanges.size} perubahan</strong> akan hilang jika tidak disimpan:<ul style="margin:8px 0 0 0;padding-left:18px;text-align:left">${changedList}</ul><br>Pilih <strong>Simpan & Keluar</strong> untuk menyimpan sebelum kembali ke playlists.`;
+  const message = `<strong>${_tracksWithChanges.size} perubahan</strong> akan hilang jika tidak disimpan:<ul style="margin:8px 0 0 0;padding-left:18px;text-align:left">${changedList}</ul><br><em style="color:#666;font-size:0.85em">💡 Simpan dulu perubahan ini sebelum lanjut ke halaman lain.</em>`;
 
   showConfirm({
     title: 'Perubahan Belum Disimpan',
@@ -873,12 +911,12 @@ async function submitSetAllDuration() {
 
     const hasVod    = tracks.length !== nonVodTracks.length;
     const mp4Warn   = hasVod
-      ? `<br><br><i class="fas fa-triangle-exclamation" style="color:#f59e0b"></i> <strong>Track MP4 tidak ikut berubah</strong> — durasi mengikuti VLC secara otomatis.`
+      ? `<br><br><i class="fas fa-triangle-exclamation" style="color:#f59e0b"></i> <strong>Track MP4 tidak ikut berubah</strong> — durasi mengikuti file sumber secara otomatis.`
       : '';
 
     showConfirm({
       title:        'Durasi Diperbarui',
-      message:      `Durasi <strong>${sec} detik</strong> diterapkan ke <strong>${nonVodTracks.length} stream</strong>.${mp4Warn}<br><br><i class="fas fa-rotate" style="color:#3b82f6"></i> Klik <strong>Load ke VLC</strong> untuk menerapkan perubahan.`,
+      message:      `Durasi <strong>${sec} detik</strong> diterapkan ke <strong>${nonVodTracks.length} stream</strong>.${mp4Warn}`,
       confirmLabel: 'Mengerti',
       confirmClass: 'btn-primary',
       iconClass:    'fas fa-circle-check',
@@ -922,61 +960,6 @@ async function addTrack() {
   } catch {
     showToast('❌ Tidak bisa konek ke server', '#c0392b');
   }
-}
-
-// ─── ROTASI PER-TRACK (berdasarkan durasi tiap stream) ────────
-let _rotatePlaylist = [];
-let _rotateIndex    = 0;
-let _rotateTimer    = null;
-let _lastVlcTitle   = null;   // double-skip guard: title di-snapshot saat schedule
-
-async function _vlcNext() {
-  try { await fetch(`${API}/vlc/next`, { method: 'POST' }); } catch {}
-}
-
-function startDurationRotate(tracks) {
-  clearTimeout(_rotateTimer);
-  _rotatePlaylist = (tracks || []).filter(t => t.url);
-  _rotateIndex    = 0;
-  _lastVlcTitle   = null;   // clear title dari session sebelumnya
-  if (_rotatePlaylist.length > 1) _scheduleRotate();
-}
-
-async function _scheduleRotate() {
-  const track = _rotatePlaylist[_rotateIndex];
-
-  // Tunggu VLC settle setelah pergantian track
-  await new Promise(r => setTimeout(r, 500));
-
-  // Tanya VLC: VOD (length > 0) atau live stream (length == 0)?
-  const d = await fetchVlcStatus();
-
-  let ms;
-  if (d && d.length > 0) {
-    // VOD/file: gunakan actual remaining duration dari VLC + 1s buffer anti double-skip
-    const remainingMs = (d.length - d.time) * 1000;
-    ms = Math.max(1000, remainingMs + 1000);
-    _lastVlcTitle = d.title;   // snapshot untuk deteksi apakah VLC sudah maju sendiri
-  } else {
-    // Live RTMP stream (atau VLC tidak bisa dihubungi): gunakan configured duration
-    ms = track.duration ?? 30000;
-    _lastVlcTitle = null;
-  }
-
-  _rotateTimer = setTimeout(async () => {
-    _rotateIndex = (_rotateIndex + 1) % _rotatePlaylist.length;
-
-    // Untuk VOD: cek apakah VLC sudah auto-advance (title berubah = sudah maju sendiri)
-    let vlcAlreadyAdvanced = false;
-    if (_lastVlcTitle !== null) {
-      const current = await fetchVlcStatus();
-      if (current && current.title !== _lastVlcTitle) vlcAlreadyAdvanced = true;
-    }
-
-    // Kirim pl_next hanya kalau VLC belum maju sendiri
-    if (!vlcAlreadyAdvanced) await _vlcNext();
-    _scheduleRotate();
-  }, ms);
 }
 
 // ─── DRAG & DROP HANDLERS ─────────────────────────────────────
@@ -1075,6 +1058,11 @@ async function _routeFromPath() {
   const path = location.pathname.replace(/^\//, ''); // hilangkan slash depan
   _skipHashPush = true;
 
+  if (!currentPlaylistId && lastDetailPlaylistId && lastDetailPlaylistName) {
+    currentPlaylistId = lastDetailPlaylistId;
+    currentPlaylistName = lastDetailPlaylistName;
+  }
+
   if (!path || path === 'dashboard') {
     const saved    = localStorage.getItem('lastPage') || 'dashboard';
     const lastPage = document.getElementById(`page-${saved}`) ? saved : 'dashboard';
@@ -1099,7 +1087,6 @@ async function _routeFromPath() {
 // ─── INIT ─────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   _routeFromPath();
-  setInterval(fetchVlcStatus, 3000);  // polling VLC tiap 3 detik
 });
 
 window.addEventListener('popstate', _routeFromPath);

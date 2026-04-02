@@ -1,20 +1,13 @@
 import os
 import json
 import uuid
-import time
-import requests
 from datetime import datetime
 from xml.etree import ElementTree as ET
-from flask import Flask, jsonify, request, send_from_directory, abort
+from flask import Flask, jsonify, request, send_from_directory, send_file
 from flask_cors import CORS
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
-
-# ─── KONFIGURASI ─────────────────────────────────────────────
-VLC_URL      = 'http://localhost:8080'
-VLC_PASSWORD = 'dentri'          # sesuaikan password VLC kamu
-VLC_AUTH     = ('', VLC_PASSWORD)
 
 PLAYLISTS_DIR = os.path.join(os.path.dirname(__file__), 'playlists')
 META_FILE     = os.path.join(PLAYLISTS_DIR, '_meta.json')
@@ -136,22 +129,11 @@ def sanitize_filename(name):
     # Batasi panjang nama file
     return name[:60] if name else 'playlist'
 
-# ─── HELPER VLC ───────────────────────────────────────────────
-
-def vlc_get(command_params):
-    """Kirim command ke VLC HTTP API"""
-    url = f'{VLC_URL}/requests/status.json'
-    return requests.get(url, params=command_params, auth=VLC_AUTH, timeout=3)
-
 # ─── ROUTES: STATIC ──────────────────────────────────────────
 
 @app.route('/')
 def index():
     return send_from_directory('static', 'index.html')
-
-@app.route('/cctvName')
-def cctv_name_overlay():
-    return send_from_directory('static', 'cctvName.html')
 
 @app.route('/<path:filename>')
 def static_files(filename):
@@ -195,6 +177,7 @@ def create_playlist():
         'name':        name,
         'filename':    safe_name,       # ← simpan nama file di meta
         'description': desc,
+        'rtmpStatus':  'pause',
         'createdAt':   datetime.now().isoformat(),
         'updatedAt':   None
     }
@@ -230,6 +213,24 @@ def update_playlist(pl_id):
     write_meta(meta)
     return jsonify(pl)
 
+@app.route('/api/playlists/<pl_id>/rtmp-status', methods=['POST'])
+def update_playlist_rtmp_status(pl_id):
+    data = request.get_json() or {}
+    status = (data.get('status') or '').strip().lower()
+
+    if status not in {'play', 'pause'}:
+        return jsonify({'error': 'Status tidak valid'}), 400
+
+    meta = read_meta()
+    pl = next((p for p in meta if p['id'] == pl_id), None)
+    if not pl:
+        return jsonify({'error': 'Playlist tidak ditemukan'}), 404
+
+    pl['rtmpStatus'] = status
+    pl['updatedAt'] = datetime.now().isoformat()
+    write_meta(meta)
+    return jsonify(pl)
+
 @app.route('/api/playlists/<pl_id>', methods=['DELETE'])
 def delete_playlist(pl_id):
     path = xspf_path(pl_id)
@@ -239,6 +240,17 @@ def delete_playlist(pl_id):
     meta = [p for p in read_meta() if p['id'] != pl_id]
     write_meta(meta)
     return jsonify({'success': True})
+
+@app.route('/api/playlists/<pl_id>/download', methods=['GET'])
+def download_playlist_xspf(pl_id):
+    path = xspf_path(pl_id)
+    if not os.path.exists(path):
+        return jsonify({'error': 'Playlist tidak ditemukan'}), 404
+
+    meta = read_meta()
+    pl = next((p for p in meta if p['id'] == pl_id), None)
+    filename = f"{sanitize_filename(pl['name']) if pl else pl_id}.xspf"
+    return send_file(path, as_attachment=True, download_name=filename)
 
 # ─── API: TRACKS ─────────────────────────────────────────────
 
@@ -374,115 +386,6 @@ def move_track(pl_id):
     save_xspf(pl_id, tracks)
     update_playlist_timestamp(pl_id)
     return jsonify({'success': True})
-
-# ─── API: LOAD KE VLC ────────────────────────────────────────
-
-@app.route('/api/playlists/<pl_id>/load-vlc', methods=['POST'])
-def load_vlc(pl_id):
-    path = xspf_path(pl_id)
-    if not os.path.exists(path):
-        return jsonify({'error': 'File tidak ditemukan'}), 404
-
-    try:
-        # Windows path → pakai forward slash + encode
-        abs_path = os.path.abspath(path).replace('\\', '/')
-        file_uri = f'file:///{abs_path}'
-
-        vlc_get({'command': 'pl_empty'})
-        vlc_get({'command': 'in_play', 'input': file_uri})
-
-        # Pastikan playlist loop aktif, repeat per-track mati
-        time.sleep(0.6)
-        status = requests.get(f'{VLC_URL}/requests/status.json', auth=VLC_AUTH, timeout=3).json()
-        if not status.get('loop', False):
-            vlc_get({'command': 'pl_loop'})    # nyalakan playlist loop
-        if status.get('repeat', False):
-            vlc_get({'command': 'pl_repeat'})  # matikan repeat track
-
-        return jsonify({'success': True, 'message': 'Playlist berhasil di-load ke VLC!'})
-    except requests.exceptions.ConnectionError:
-        return jsonify({'error': 'Gagal konek ke VLC. Pastikan VLC HTTP API sudah aktif!'}), 503
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-# ─── API: VLC STATUS ─────────────────────────────────────────
-
-@app.route('/api/vlc/status', methods=['GET'])
-def vlc_status():
-    try:
-        r    = requests.get(f'{VLC_URL}/requests/status.json', auth=VLC_AUTH, timeout=3)
-        data = r.json()
-        categories = data.get('information', {}).get('category', {})
-        meta = categories.get('meta', {})
-
-        fps = resolution = codec = None
-        for val in categories.values():
-            if not isinstance(val, dict):
-                continue
-            if val.get('Type') == 'Video':
-                fps        = val.get('Frame_rate') or val.get('Frame rate')
-                resolution = val.get('Video_resolution') or val.get('Video Resolution')
-                raw_codec  = val.get('Codec', '')
-                # ambil nama pendek dalam kurung, misal "H264 - MPEG-4 AVC (avc1)" → "avc1"
-                if '(' in raw_codec:
-                    codec = raw_codec.split('(')[-1].rstrip(')').strip()
-                else:
-                    codec = raw_codec or None
-
-        return jsonify({
-            'connected':  True,
-            'state':      data.get('state', 'stopped'),
-            'title':      meta.get('title') or meta.get('filename') or '(tidak ada yang diputar)',
-            'time':       data.get('time', 0),
-            'length':     data.get('length', 0),
-            'fullscreen': bool(data.get('fullscreen', False)),
-            'fps':        fps,
-            'resolution': resolution,
-            'codec':      codec,
-        })
-    except Exception:
-        return jsonify({
-            'connected':   False,
-            'state':       'disconnected',
-            'title':       '-',
-            'time':        0,
-            'length':      0,
-            'fps':        None,
-            'resolution': None,
-            'codec':      None,
-        })
-
-# ─── API: VLC NEXT / PREV ───────────────────────────────────
-
-@app.route('/api/vlc/fullscreen', methods=['POST'])
-def vlc_fullscreen():
-    try:
-        vlc_get({'command': 'fullscreen'})
-        return jsonify({'success': True})
-    except requests.exceptions.ConnectionError:
-        return jsonify({'error': 'Gagal konek ke VLC'}), 503
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/vlc/next', methods=['POST'])
-def vlc_next():
-    try:
-        vlc_get({'command': 'pl_next'})
-        return jsonify({'success': True})
-    except requests.exceptions.ConnectionError:
-        return jsonify({'error': 'Gagal konek ke VLC'}), 503
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/vlc/prev', methods=['POST'])
-def vlc_prev():
-    try:
-        vlc_get({'command': 'pl_prev'})
-        return jsonify({'success': True})
-    except requests.exceptions.ConnectionError:
-        return jsonify({'error': 'Gagal konek ke VLC'}), 503
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 # ─── MAIN ─────────────────────────────────────────────────────
 

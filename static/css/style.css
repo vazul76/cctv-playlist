@@ -414,7 +414,7 @@ h3 { font-size: 1rem; font-weight: 600; color: #334155; }
   box-shadow: 0 2px 6px rgba(0,0,0,0.06);
 }
 
-.btn-edit { display: none; }
+.btn-edit { display: inline-flex; }
 
 /* ══ FORM ═══════════════════════════════════════════════════════ */
 .form-group { margin-bottom: 18px; }
@@ -816,10 +816,28 @@ td input:disabled,
   color: #0F172A;
   cursor: pointer;
   text-decoration: none;
+  position: relative;
+  display: inline-block;
   font-weight: 600;
   transition: color 0.15s;
 }
-.tbl-name-link:hover { color: #1251A3; text-decoration: underline; }
+
+.tbl-name-link::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: -2px;
+  width: 100%;
+  height: 1.5px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.22s ease;
+}
+
+.tbl-name-link:hover::after {
+  transform: scaleX(1);
+}
 .tbl-desc    { color: #64748B; }
 .tbl-center  { text-align: center; }
 .tbl-date    { color: #64748B; font-size: 0.82rem; white-space: nowrap; }
@@ -884,6 +902,225 @@ td input:disabled,
 .track-modified {
   background: #FFFBEB !important;
   border-left: 3px solid #D97706 !important;
+}
+
+/* VLC CONTROL PAGE */
+.vlc-control-panel {
+  background: #fff;
+  border: 1px solid #E2E8F0;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  max-width: 560px;
+  padding: 28px;
+}
+
+.vlc-control-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: #EFF6FF;
+  color: #1565C0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.35rem;
+  margin-bottom: 14px;
+}
+
+.vlc-control-panel h3 {
+  font-size: 1.05rem;
+  color: #0F172A;
+  margin-bottom: 8px;
+}
+
+#vlc-target-hint {
+  color: #64748B;
+  font-size: 0.86rem;
+  line-height: 1.55;
+  margin-bottom: 12px;
+}
+
+.vlc-warning-text {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #FFFBEB;
+  border: 1px solid #FDE68A;
+  color: #92400E;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.vlc-warning-text i {
+  margin-top: 2px;
+  color: #D97706;
+}
+
+.vlc-control-target {
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #0F172A;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 14px;
+  word-break: break-word;
+}
+
+.vlc-dropdown {
+  position: relative;
+  margin-bottom: 10px;
+}
+
+.vlc-dropdown.disabled {
+  opacity: 0.75;
+}
+
+.vlc-dropdown-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #0F172A;
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+.vlc-dropdown-trigger i {
+  color: #64748B;
+  font-size: 0.8rem;
+  transition: transform 0.18s ease;
+}
+
+.vlc-dropdown.open .vlc-dropdown-trigger i {
+  transform: rotate(180deg);
+}
+
+.vlc-dropdown-trigger:hover {
+  background-color: #F1F5F9;
+  border-color: #CBD5E1;
+}
+
+.vlc-dropdown-trigger:focus {
+  outline: none;
+  border-color: #1565C0;
+  box-shadow: 0 0 0 3px rgba(21,101,192,0.12);
+  background-color: #FFFFFF;
+}
+
+.vlc-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  border-radius: 10px;
+  box-shadow: 0 10px 26px rgba(15,23,42,0.14);
+  overflow: hidden;
+  max-height: 220px;
+  z-index: 20;
+  display: none;
+}
+
+.vlc-dropdown.open .vlc-dropdown-menu {
+  display: block;
+}
+
+.vlc-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid #E2E8F0;
+  background: #F8FAFC;
+}
+
+.vlc-search-wrap i {
+  color: #94A3B8;
+  font-size: 0.8rem;
+}
+
+.vlc-search-wrap input {
+  width: 100%;
+  border: 1px solid #E2E8F0;
+  background: #FFFFFF;
+  color: #0F172A;
+  border-radius: 7px;
+  font-size: 0.82rem;
+  padding: 7px 9px;
+  outline: none;
+}
+
+.vlc-search-wrap input:focus {
+  border-color: #1565C0;
+  box-shadow: 0 0 0 2px rgba(21,101,192,0.1);
+}
+
+.vlc-options-wrap {
+  max-height: 170px;
+  overflow-y: auto;
+}
+
+.vlc-option {
+  width: 100%;
+  border: none;
+  background: #FFFFFF;
+  color: #0F172A;
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  transition: background 0.14s, color 0.14s;
+}
+
+.vlc-option:hover {
+  background: #EFF6FF;
+  color: #0B4EA2;
+}
+
+.vlc-option.active {
+  background: #DBEAFE;
+  color: #0B4EA2;
+  font-weight: 700;
+}
+
+.vlc-option i {
+  color: #1565C0;
+  font-size: 0.78rem;
+}
+
+.vlc-option-empty {
+  padding: 12px;
+  color: #64748B;
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.vlc-refresh-indicator {
+  font-size: 0.76rem;
+  color: #64748B;
+  margin-bottom: 14px;
+}
+
+.vlc-control-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* MODAL FORM (input) */

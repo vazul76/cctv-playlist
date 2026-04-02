@@ -1,119 +1,87 @@
-# CCTV Dashboard
+# CCTV Dashboard (RTMP Playlist Builder)
 
-Dashboard monitoring dan kontrol stream CCTV berbasis Flask untuk mengelola playlist stream (XSPF) melalui VLC Media Player.
+Web ini dipakai untuk manajemen playlist stream CCTV dan output RTMP.
+Konsep saat ini: fokus ke pembuatan playlist, bukan kontrol VLC.
 
 ## Fitur Utama
 
-- **Playlist Management**: CRUD playlist beserta track stream (Judul, URL, Durasi).
-- **Import XSPF**: Import file playlist `.xspf` yang sudah ada langsung ke dashboard — nama playlist otomatis diambil dari nama file.
-- **Durasi per Track**: Setiap stream bisa diset durasinya (detik). VLC akan otomatis pindah ke stream berikutnya saat durasi habis, tanpa perlu timer manual.
-- **VLC Loop Otomatis**: Saat playlist di-load, VLC dikonfigurasi otomatis untuk loop (kembali ke awal setelah stream terakhir) dan menonaktifkan repeat per-track.
-- **Live Info Stream**: Monitoring FPS, Resolusi, dan Codec langsung di halaman Dashboard.
-- **Responsive Design**: Tampilan optimal di desktop (sidebar) maupun mobile (drawer menu).
-- **CCTV Name Overlay**: Endpoint `/cctvName` untuk overlay nama CCTV di atas video player eksternal.
-
-## Tech Stack
-
-### Backend
-- **Python 3.x**: Bahasa pemrograman utama.
-- **Flask**: Micro-framework web server.
-- **Requests**: Komunikasi HTTP ke VLC HTTP API.
-- **XML ElementTree**: Parsing & generate file `.xspf`.
-
-### Frontend
-- **HTML5 & CSS3**: Struktur & modern light mode styling.
-- **Vanilla JavaScript**: Logika SPA (Single Page Application).
-- **Font Awesome 6.5.1**: Library icon.
-
-### Media Engine
-- **VLC Media Player**: Engine pemutar media via HTTP Lua API.
-
-## Persyaratan
-
-1. **Python 3.x** terinstal.
-2. **VLC Media Player** dengan HTTP API aktif (lihat konfigurasi di bawah).
-3. Install library Python:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-### Konfigurasi VLC HTTP API
-
-1. Buka VLC → **Tools** → **Preferences**.
-2. Di pojok kiri bawah, pilih **Show settings: All**.
-3. **Interface** → **Main interfaces** → centang **Web (Lua HTTP)**.
-4. **Main interfaces** → **Lua** → isi **Lua HTTP Password** (sesuaikan dengan `VLC_PASSWORD` di `app.py`, default: `password`).
-5. Restart VLC.
-
-> Koneksi VLC: `host` dan `port` juga bisa disesuaikan di bagian atas `app.py` (`VLC_HOST`, `VLC_PORT`).
-
-## Cara Menjalankan
-
-1. Pastikan VLC sudah berjalan dengan HTTP API aktif.
-2. Jalankan server:
-   ```bash
-   python app.py
-   ```
-3. Akses dashboard di browser: `http://localhost:3000`
+- Dashboard ringkas: total playlist, total stream, total playlist RTMP aktif.
+- Playlist management: tambah, edit, hapus playlist.
+- Track management: tambah, edit, hapus, drag-drop urutan stream per playlist.
+- Durasi per stream (detik): tetap bisa diatur seperti sebelumnya.
+- Play RTMP per playlist:
+    - Pilih mode `Per Stream` atau `4 Channel`.
+    - Link output otomatis dicopy ke clipboard:
+        - `rtmp://jitv:jitv@103.255.15.138:1935/live/<nama_playlist>`
+    - Status tombol berubah `Play RTMP` -> `Pause RTMP`.
+- Validasi mode `4 Channel`:
+    - Muncul peringatan jika jumlah stream bukan kelipatan 4.
+- Download XSPF per playlist dari halaman Playlist.
 
 ## Struktur Project
 
 ```
 cctv-dashboard/
-├── app.py                  # Backend Flask + VLC integration + REST API
+├── app.py
 ├── requirements.txt
-├── playlists/              # Menyimpan file .xspf dan _meta.json per playlist
+├── playlists/
+│   ├── _meta.json
+│   └── *.xspf
 └── static/
-    ├── index.html          # Shell SPA
-    ├── cctvName.html       # Overlay nama CCTV (akses via /cctvName)
-    ├── css/style.css       # Styling + responsive rules
-    └── js/app.js           # Logika frontend
+        ├── index.html
+        ├── css/style.css
+        └── js/app.js
 ```
 
-## Cara Pakai
+## Tutorial Awal Penerapan Perubahan
 
-### Membuat Playlist Baru
-1. Menu **Playlists** → klik **Tambah Playlist**.
-2. Isi nama dan deskripsi, lalu klik **Simpan**.
+1. Install dependency Python.
+```bash
+pip install -r requirements.txt
+```
 
-### Import dari File XSPF
-1. Menu **Playlists** → klik **Tambah Playlist**.
-2. Klik **Import XSPF** → pilih file `.xspf`.
-3. Nama playlist otomatis terisi dari nama file. Jika ada track tanpa judul, akan muncul peringatan dan nama diambil otomatis dari URL.
-4. Klik **Simpan** untuk membuat playlist beserta semua track-nya sekaligus.
+2. Jalankan server Flask.
+```bash
+python app.py
+```
 
-### Menambah / Mengedit Stream
-- Buka detail playlist → klik **Tambah Stream** atau edit langsung di tabel.
-- **Judul**: nama tampilan stream.
-- **URL**: alamat RTMP / stream (contoh: `rtmp://host:port/live/nama`).
-- **Durasi (detik)**: berapa lama VLC memutar stream ini sebelum pindah ke berikutnya. Default: 30 detik. Kosongkan jika stream tidak memiliki batas waktu (live stream manual).
+3. Buka web di browser.
+```text
+http://localhost:3000
+```
 
-### Format XSPF yang Didukung
+4. Buat playlist pertama:
+- Masuk menu `Playlist`.
+- Klik `Tambah Playlist`.
+- Isi nama + deskripsi.
+
+5. Isi stream per playlist:
+- Klik nama playlist untuk masuk detail.
+- Tambahkan stream dengan URL `rtmp://`, `rtsp://`, atau `http(s)://`.
+- Set `Durasi (detik)` per stream sesuai kebutuhan.
+
+6. Uji output RTMP:
+- Kembali ke halaman Playlist.
+- Klik `Play RTMP`.
+- Pilih `Per Stream` atau `4 Channel`.
+- Link output otomatis tersalin ke clipboard.
+
+7. Download XSPF bila diperlukan:
+- Klik `Download xspf` pada baris playlist.
+
+## Catatan Integrasi FFmpeg (Quad 4-Channel)
+
+Script FFmpeg gabungan 4 input seperti contoh kamu tetap kompatibel dengan alur dashboard ini.
+Dashboard dipakai untuk menyusun daftar stream + durasi, lalu output RTMP dipakai di pipeline ingest/transcode kamu.
+
+## Format Track XSPF
+
 ```xml
 <track>
-    <location>rtmp://host:port/live/nama_stream</location>
-    <title>Nama CCTV</title>
-    <duration>30000</duration>  <!-- dalam milidetik -->
+    <location>rtmp://host/app/stream</location>
+    <title>Nama Kamera</title>
+    <duration>30000</duration>
 </track>
 ```
-> Catatan: `<duration>` di XSPF menggunakan **milidetik**. Input durasi di dashboard menggunakan **detik** dan dikonversi otomatis.
 
-### Load Playlist ke VLC
-1. Menu **Playlists** → klik nama playlist → **Load ke VLC**.
-2. VLC akan langsung memutar playlist tersebut dengan **loop otomatis aktif**.
-3. VLC akan berpindah ke stream berikutnya otomatis sesuai durasi yang ditentukan.
-
-### Indikator Koneksi VLC
-- Titik hijau di pojok kiri bawah (desktop) atau kanan atas (mobile) menunjukkan VLC terhubung dan aktif.
-
-## Ketentuan Durasi & Loop
-
-| Kondisi | Perilaku VLC |
-|---|---|
-| Track punya `<duration>` | VLC otomatis pindah ke track berikutnya saat durasi habis |
-| Track tanpa `<duration>` | VLC menunggu stream selesai sendiri (cocok untuk file VOD) |
-| Sampai track terakhir | VLC kembali ke track pertama (loop aktif otomatis) |
-| `repeat` per-track | Selalu dinonaktifkan saat load playlist |
-
----
-*CCTV Dashboard v1.2 — Created by GitHub Vazul*
+`duration` disimpan dalam milidetik di XSPF, input UI tetap dalam detik.
