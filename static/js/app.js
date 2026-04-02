@@ -1,6 +1,7 @@
 ﻿const API = '/api';
 let currentPlaylistId   = null;
 let currentPlaylistName = null;
+let currentPlaylistDescription = '';
 let lastDetailPlaylistId = localStorage.getItem('lastDetailPlaylistId') || null;
 let lastDetailPlaylistName = localStorage.getItem('lastDetailPlaylistName') || null;
 let _pendingImportTracks = null; // tracks parsed from XSPF, siap diimport saat Simpan
@@ -35,7 +36,7 @@ function navigate(page, data = {}) {
   if (page === 'playlist-detail') {
     const el = document.getElementById('track-search');
     if (el) el.value = '';
-    loadPlaylistDetail(data.id, data.name);
+    loadPlaylistDetail(data.id, data.name, data.description || '');
   }
 
   // Update URL path (tanpa #)
@@ -113,6 +114,50 @@ function showToast(msg, color = '#27ae60') {
   setTimeout(() => { t.style.display = 'none'; }, 2800);
 }
 
+function openPlayRtmpDropdown() {
+  document.getElementById('play-rtmp-dropdown')?.classList.add('open');
+}
+
+function closePlayRtmpDropdown() {
+  document.getElementById('play-rtmp-dropdown')?.classList.remove('open');
+}
+
+function togglePlayRtmpDropdown() {
+  const dropdown = document.getElementById('play-rtmp-dropdown');
+  if (!dropdown) return;
+  dropdown.classList.toggle('open');
+}
+
+function selectPlayRtmpMode(value, label) {
+  const hidden = document.getElementById('play-rtmp-mode');
+  const labelEl = document.getElementById('play-rtmp-dropdown-label');
+  const delayEl = document.getElementById('play-rtmp-delay');
+  if (hidden) hidden.value = value;
+  if (labelEl) labelEl.textContent = label;
+
+  document.querySelectorAll('.rtmp-dropdown-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.value === value);
+  });
+
+  if (delayEl) {
+    const singleMode = value === 'single';
+    delayEl.disabled = singleMode;
+    delayEl.title = singleMode
+      ? 'Mode Per Stream memakai Durasi (detik) dari daftar stream'
+      : '';
+  }
+
+  closePlayRtmpDropdown();
+}
+
+document.addEventListener('click', (event) => {
+  const dropdown = document.getElementById('play-rtmp-dropdown');
+  if (!dropdown) return;
+  if (!dropdown.contains(event.target)) {
+    dropdown.classList.remove('open');
+  }
+});
+
 // ─── FORMAT WAKTU ─────────────────────────────────────────────
 function fmtTime(s) {
   const m   = Math.floor(s / 60);
@@ -143,7 +188,12 @@ function normalizeRtmpPlaylistName(name) {
 }
 
 function buildPlaylistRtmpUrl(name) {
-  return `rtmp://jitv:jitv@103.255.15.138:1935/live/${normalizeRtmpPlaylistName(name)}`;
+  return `rtmp://103.255.15.138:1935/live/${normalizeRtmpPlaylistName(name)}`;
+}
+
+function buildPlaylistXspfUrl(id) {
+  const base = `${window.location.origin}${API}/playlists/${encodeURIComponent(id)}/xspf`;
+  return `${base}?rotate=list`;
 }
 
 async function copyTextToClipboard(text) {
@@ -174,7 +224,7 @@ async function loadDashboard() {
   const totalTrEl = document.getElementById('dash-total-tracks');
   if (totalTrEl) totalTrEl.textContent = totalTracks;
 
-  const totalActiveRtmp = playlists.filter(p => (p.rtmpStatus || 'pause') === 'play').length;
+  const totalActiveRtmp = playlists.filter(p => Boolean(p.rtmpRunning || (p.rtmpStatus || 'pause') === 'play')).length;
   const activeRtmpEl = document.getElementById('dash-active-rtmp');
   if (activeRtmpEl) activeRtmpEl.textContent = totalActiveRtmp;
 }
@@ -207,13 +257,38 @@ function openPlayRtmpModal(id, name, trackCount) {
   const nameEl = document.getElementById('play-rtmp-name');
   const trackCountEl = document.getElementById('play-rtmp-track-count');
   const previewEl = document.getElementById('play-rtmp-preview');
+  const xspfPreviewEl = document.getElementById('play-xspf-preview');
+  const modeHidden = document.getElementById('play-rtmp-mode');
+  const delayEl = document.getElementById('play-rtmp-delay');
   if (!modal || !idEl || !nameEl || !trackCountEl || !previewEl) return;
 
   idEl.value = id;
   nameEl.value = name;
   trackCountEl.value = String(trackCount || 0);
   previewEl.textContent = buildPlaylistRtmpUrl(name);
+  if (xspfPreviewEl) {
+    xspfPreviewEl.textContent = buildPlaylistXspfUrl(id);
+  }
+  if (modeHidden) modeHidden.value = 'single';
+  selectPlayRtmpMode('single', 'Per Stream');
+  if (delayEl && !delayEl.value) delayEl.value = String(Math.max(1, Number(localStorage.getItem('playRtmpDelaySeconds') || '30')));
   modal.classList.add('active');
+}
+
+async function copyPlayXspfUrl() {
+  const id = document.getElementById('play-rtmp-id')?.value;
+  if (!id) {
+    showToast('❌ Playlist belum dipilih', '#DC2626');
+    return;
+  }
+
+  try {
+    const xspfUrl = buildPlaylistXspfUrl(id);
+    await copyTextToClipboard(xspfUrl);
+    showToast('✅ URL XSPF tersalin ke clipboard');
+  } catch {
+    showToast('❌ Gagal menyalin URL XSPF', '#DC2626');
+  }
 }
 
 function closePlayRtmpModal() {
@@ -222,10 +297,16 @@ function closePlayRtmpModal() {
 
 async function updatePlaylistRtmpStatus(id, status) {
   try {
+    const delaySeconds = parseInt(document.getElementById('play-rtmp-delay')?.value || '30', 10);
+    const mode = document.getElementById('play-rtmp-mode')?.value || 'single';
     const r = await fetch(`${API}/playlists/${id}/rtmp-status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status })
+      body: JSON.stringify({
+        status,
+        mode,
+        rotateDelaySeconds: mode === 'quad' && Number.isFinite(delaySeconds) ? delaySeconds : null,
+      })
     });
     return await r.json();
   } catch {
@@ -243,22 +324,24 @@ async function pauseRtmpPlaylist(id, name) {
   }
 }
 
-async function submitPlayRtmp(mode) {
+async function submitPlayRtmp() {
   const id = document.getElementById('play-rtmp-id')?.value;
   const name = document.getElementById('play-rtmp-name')?.value || '';
   const trackCount = parseInt(document.getElementById('play-rtmp-track-count')?.value || '0', 10);
   if (!id || !name) return;
 
-  if (mode === 'quad' && (trackCount < 4 || trackCount % 4 !== 0)) {
-    showConfirm({
-      title: 'Peringatan Mode 4 Channel',
-      message: `Jumlah stream saat ini <strong>${trackCount}</strong>. Mode 4 Channel idealnya menggunakan kelipatan 4 (4, 8, 12, dst).`,
-      confirmLabel: 'Lanjutkan',
-      confirmClass: 'btn-primary',
-      iconClass: 'fas fa-triangle-exclamation',
-      iconType: 'warning',
-      onConfirm: () => submitPlayRtmpConfirmed(mode, id, name)
-    });
+  const mode = document.getElementById('play-rtmp-mode')?.value || 'single';
+  const modeHidden = document.getElementById('play-rtmp-mode');
+  if (modeHidden) modeHidden.value = mode;
+
+  const delaySeconds = parseInt(document.getElementById('play-rtmp-delay')?.value || '30', 10);
+  if (mode === 'quad' && (!Number.isFinite(delaySeconds) || delaySeconds < 1)) {
+    showToast('❌ Delay rotate harus minimal 1 detik', '#DC2626');
+    return;
+  }
+
+  if (mode === 'quad' && trackCount < 4) {
+    showToast(`❌ Mode 4 Channel butuh minimal 4 stream. Saat ini ada ${trackCount} stream.`, '#DC2626');
     return;
   }
 
@@ -270,10 +353,13 @@ async function submitPlayRtmpConfirmed(mode, id, name) {
   const rtmpUrl = buildPlaylistRtmpUrl(name);
 
   try {
+    localStorage.setItem('playRtmpDelaySeconds', String(parseInt(document.getElementById('play-rtmp-delay')?.value || '30', 10)));
+    document.getElementById('play-rtmp-mode').value = mode;
     await copyTextToClipboard(rtmpUrl);
     const updated = await updatePlaylistRtmpStatus(id, 'play');
-    if (!updated || updated.error) {
-      showToast('❌ Gagal mengubah status RTMP', '#DC2626');
+    if (!updated || updated.error || !updated.success) {
+      console.error('[RTMP] gagal start', updated);
+      showToast(`❌ ${updated?.error || 'Gagal mengubah status RTMP'}`, '#DC2626');
       return;
     }
     closePlayRtmpModal();
@@ -340,8 +426,10 @@ async function loadPlaylists() {
 
     const rows = playlists.map((p, idx) => {
       const trackCount  = p.track_count ?? 0;
-      const rtmpStatus   = (p.rtmpStatus || 'pause').toLowerCase();
-      const isPlaying    = rtmpStatus === 'play';
+      const isPlaying    = Boolean(p.rtmpRunning);
+      if (p.rtmpLastError) {
+        console.error(`[RTMP] ${p.name}: ${p.rtmpLastError}`);
+      }
       const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('id-ID', {
         day: '2-digit', month: 'short', year: 'numeric'
       }) : '-';
@@ -356,21 +444,25 @@ async function loadPlaylists() {
           <td class="tbl-date">${fmtDate(p.createdAt)}</td>
           <td class="tbl-date">${fmtDate(p.updatedAt)}</td>
           <td class="tbl-actions">
-            <button class="btn btn-outline btn-edit" style="font-size:0.75rem;padding:5px 10px"
-              onclick="openEditPlaylistModal('${p.id}', '${escAttr(p.name)}', '${escAttr(p.description || '')}')">
-              <i class="fas fa-pen-to-square"></i> Edit
+            <button class="btn btn-outline action-icon-btn btn-edit" data-tooltip="Stream" title="Stream"
+              onclick="navigate('playlist-detail', { id: '${p.id}', name: '${escAttr(p.name)}', description: '${escAttr(p.description || '')}' })">
+              <i class="fas fa-list"></i>
+              <span class="btn-text">Stream</span>
             </button>
-            <button class="btn ${isPlaying ? 'btn-outline' : 'btn-success'}" style="font-size:0.75rem;padding:5px 10px"
+            <button class="btn ${isPlaying ? 'btn-outline' : 'btn-success'} action-icon-btn" data-tooltip="${isPlaying ? 'Pause RTMP' : 'Play RTMP'}" title="${isPlaying ? 'Pause RTMP' : 'Play RTMP'}"
               onclick="${isPlaying ? `pauseRtmpPlaylist('${p.id}', '${escAttr(p.name)}')` : `openPlayRtmpModal('${p.id}', '${escAttr(p.name)}', ${trackCount})`}">
-              <i class="fas ${isPlaying ? 'fa-pause' : 'fa-circle-play'}"></i> ${isPlaying ? 'Pause RTMP' : 'Play RTMP'}
+              <i class="fas ${isPlaying ? 'fa-pause' : 'fa-circle-play'}"></i>
+              <span class="btn-text">${isPlaying ? 'Pause RTMP' : 'Play RTMP'}</span>
             </button>
-            <button class="btn btn-outline" style="font-size:0.75rem;padding:5px 10px"
+            <button class="btn btn-outline action-icon-btn" data-tooltip="Download xspf" title="Download xspf"
               onclick="downloadPlaylistXspf('${p.id}')">
-              <i class="fas fa-file-arrow-down"></i> Download xspf
+              <i class="fas fa-file-arrow-down"></i>
+              <span class="btn-text">Download xspf</span>
             </button>
-            <button class="btn btn-danger" style="font-size:0.75rem;padding:5px 8px"
+            <button class="btn btn-danger action-icon-btn" data-tooltip="Delete" title="Delete"
               onclick="deletePlaylist('${p.id}')">
-              <i class="fas fa-trash-can"></i> Delete
+              <i class="fas fa-trash-can"></i>
+              <span class="btn-text">Delete</span>
             </button>
           </td>
         </tr>`;
@@ -595,9 +687,10 @@ function _processXspfContent(xmlText, fileName = '') {
 }
 
 // ─── PLAYLIST DETAIL ──────────────────────────────────────────
-async function loadPlaylistDetail(id, name) {
+async function loadPlaylistDetail(id, name, description = '') {
   currentPlaylistId   = id;
   currentPlaylistName = name;
+  currentPlaylistDescription = description;
   lastDetailPlaylistId = id;
   lastDetailPlaylistName = name;
   localStorage.setItem('lastDetailPlaylistId', id);
@@ -1074,7 +1167,7 @@ async function _routeFromPath() {
     try {
       const playlists = await fetch(`${API}/playlists`).then(r => r.json());
       const pl = playlists.find(p => p.id === path);
-      if (pl) navigate('playlist-detail', { id: pl.id, name: pl.name });
+      if (pl) navigate('playlist-detail', { id: pl.id, name: pl.name, description: pl.description || '' });
       else    navigate('playlists');
     } catch {
       navigate('dashboard');
