@@ -4,13 +4,17 @@
     "name": "Contoh",
     "filename": "NATARU2",
     "description": "",
-    "rtmpStatus": "pause",
     "createdAt": "2026-04-02T09:48:03.069018",
-    "updatedAt": "2026-04-02T13:12:03.873465",
-    "track_count": 4,
-    "rtmpRunning": false,
-    "rtmpMode": null,
-    "rtmpRotateDelaySeconds": null,
-    "rtmpLastError": null
+    "updatedAt": "2026-04-07T11:48:28.344387",
+    "track_count": 4
+  },
+  {
+    "id": "eea35034",
+    "name": "syabu",
+    "filename": "syabu",
+    "description": "",
+    "createdAt": "2026-04-02T14:03:08.686411",
+    "updatedAt": "2026-04-07T11:59:51.913858",
+    "track_count": 2
   }
 ]

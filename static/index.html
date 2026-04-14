@@ -29,7 +29,7 @@
       <span>CCTV</span>
     </div>
     <nav>
-      <a data-page="dashboard" onclick="navigate('dashboard')">
+      <a data-page="dashboard" class="active" onclick="navigate('dashboard')">
         <i class="fas fa-house"></i>
         <span>Dashboard</span>
       </a>
@@ -43,7 +43,7 @@
   <main id="main">
 
     <!-- PAGE: DASHBOARD -->
-    <div id="page-dashboard" class="page">
+    <div id="page-dashboard" class="page active">
       <div class="page-header">
         <div>
           <h2>Dashboard</h2>
@@ -68,37 +68,15 @@
           </div>
         </div>
         <div class="card">
-          <div class="card-icon slate"><i class="fas fa-circle-play"></i></div>
+          <div class="card-icon slate"><i class="fas fa-circle-info"></i></div>
           <div class="card-body">
-            <div class="label">RTMP Aktif</div>
-            <div class="value sm" id="dash-active-rtmp">-</div>
+            <div class="label">Fitur</div>
+            <div class="value sm">Playlist Manager</div>
           </div>
         </div>
       </div>
 
-      <!-- BOTTOM ROW: Stream Info + Quick Controls -->
-      <div class="dash-bottom-row">
 
-        <!-- Stream Info -->
-        <div class="dash-panel">
-          <div class="dash-panel-title"><i class="fas fa-film"></i> Info Stream</div>
-          <div class="stream-info-grid">
-            <div class="si-item">
-              <span class="si-label">FPS</span>
-              <span class="si-value" id="si-fps">-</span>
-            </div>
-            <div class="si-item">
-              <span class="si-label">Resolusi</span>
-              <span class="si-value" id="si-res">-</span>
-            </div>
-            <div class="si-item">
-              <span class="si-label">Codec</span>
-              <span class="si-value" id="si-codec">-</span>
-            </div>
-          </div>
-        </div>
-
-      </div>
     </div>
 
     <!-- PAGE: PLAYLISTS -->
@@ -145,13 +123,16 @@
         <i class="fas fa-arrow-left"></i> Kembali ke Playlists
       </div>
       <div class="detail-topbar">
-        <h2 id="detail-title">Detail Playlist</h2>
+        <div class="detail-inline-editor">
+          <input type="text" id="detail-title-inline" class="detail-title-inline" placeholder="Nama Playlist" oninput="detectPlaylistMetaChange()" spellcheck="false">
+          <input type="text" id="detail-desc-inline" class="detail-desc-inline" placeholder="Deskripsi playlist (opsional)" oninput="detectPlaylistMetaChange()" spellcheck="false">
+        </div>
         <div style="display:flex;gap:8px">
-          <button class="btn btn-outline" onclick="openEditPlaylistModal(currentPlaylistId, currentPlaylistName, currentPlaylistDescription)">
-            <i class="fas fa-pen-to-square"></i> Edit Playlist
-          </button>
           <button class="btn btn-primary" onclick="openAddStreamModal()">
             <i class="fas fa-plus"></i> Tambah Stream
+          </button>
+          <button class="btn btn-primary" onclick="saveAllTracks()">
+            <i class="fas fa-floppy-disk"></i> Simpan
           </button>
         </div>
       </div>
@@ -162,19 +143,15 @@
             <i class="fas fa-magnifying-glass"></i>
             <input type="text" id="track-search" placeholder="Cari stream..." oninput="filterTracks()">
           </div>
-          <button class="btn btn-outline" onclick="openSetAllDurationModal()" style="font-size:0.82rem">
-            <i class="fas fa-sliders"></i> Set Semua Durasi
-          </button>
         </div>
       </div>
       <div class="table-wrap" style="margin-bottom:32px">
       <table>
         <thead>
           <tr>
-            <th style="text-align:center">Judul</th>
-            <th style="text-align:center">URL Stream</th>
-            <th style="text-align:center;white-space:nowrap">Durasi (detik)</th>
-            <th style="text-align:center">Aksi</th>
+            <th style="text-align:center;width:34%">Judul</th>
+            <th style="text-align:center;width:48%">URL Stream</th>
+            <th style="text-align:center;width:18%">Aksi</th>
           </tr>
         </thead>
         <tbody id="tracks-tbody"></tbody>
@@ -210,77 +187,26 @@
   <!-- hidden file input for XSPF import -->
   <input type="file" id="xspf-file-input" accept=".xspf" style="display:none" onchange="_onXspfFileSelected(event)">
 
-  <!-- MODAL: EDIT PLAYLIST -->
-  <div id="modal-edit-playlist" class="modal-form-overlay" onclick="_mfOverlayClick('modal-edit-playlist',event)">
-    <div class="modal-form-box">
+  <!-- MODAL: STREAM PLAYER -->
+  <div id="modal-stream-player" class="modal-form-overlay" onclick="_mfOverlayClick('modal-stream-player',event)">
+    <div class="modal-form-box" style="max-width:900px;width:90%;max-height:90vh;display:flex;flex-direction:column">
       <div class="modal-form-header">
-        <h3><i class="fas fa-pen-to-square"></i> Edit Playlist</h3>
-        <button class="modal-form-close" onclick="closeEditPlaylistModal()"><i class="fas fa-xmark"></i></button>
+        <h3 id="player-title"><i class="fas fa-play-circle"></i> Stream</h3>
+        <button class="modal-form-close" onclick="closeStreamPlayerModal()"><i class="fas fa-xmark"></i></button>
       </div>
-      <input type="hidden" id="edit-pl-id">
-      <div class="form-group">
-        <label><i class="fas fa-tag"></i> Nama Playlist <span class="req">*</span></label>
-        <input type="text" id="edit-pl-name" placeholder="contoh: CCTV Bantul" onkeydown="if(event.key==='Enter')submitEditPlaylist()">
-      </div>
-      <div class="form-group">
-        <label><i class="fas fa-align-left"></i> Deskripsi</label>
-        <input type="text" id="edit-pl-desc" placeholder="opsional" onkeydown="if(event.key==='Enter')submitEditPlaylist()">
-      </div>
-      <div class="modal-form-actions">
-        <button class="btn btn-outline" onclick="closeEditPlaylistModal()">Batal</button>
-        <button class="btn btn-primary" onclick="submitEditPlaylist()"><i class="fas fa-check"></i> Simpan</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- MODAL: PLAY RTMP -->
-  <div id="modal-play-rtmp" class="modal-form-overlay" onclick="_mfOverlayClick('modal-play-rtmp',event)">
-    <div class="modal-form-box">
-      <div class="modal-form-header">
-        <h3><i class="fas fa-circle-play"></i> Play RTMP</h3>
-        <button class="modal-form-close" onclick="closePlayRtmpModal()"><i class="fas fa-xmark"></i></button>
-      </div>
-      <input type="hidden" id="play-rtmp-id">
-      <input type="hidden" id="play-rtmp-name">
-      <input type="hidden" id="play-rtmp-track-count">
-      <input type="hidden" id="play-rtmp-mode" value="single">
-      <p style="font-size:0.9rem;color:#475569;line-height:1.55;margin:0 0 14px">
-        Pilih mode output untuk playlist ini.
-      </p>
-      <div class="form-group" style="margin-bottom:14px">
-        <label><i class="fas fa-link"></i> Target RTMP</label>
-        <div id="play-rtmp-preview" class="vlc-control-target" style="margin-bottom:0">-</div>
-      </div>
-      <div class="form-group" style="margin-bottom:14px">
-        <label><i class="fas fa-list"></i> URL Playlist XSPF (VLC)</label>
-        <div id="play-xspf-preview" class="vlc-control-target" style="margin-bottom:8px">-</div>
-        <button type="button" class="btn btn-outline" onclick="copyPlayXspfUrl()" style="width:100%">
-          <i class="fas fa-copy"></i> Copy URL XSPF
-        </button>
-      </div>
-      <div class="form-group" style="margin-bottom:14px">
-        <label><i class="fas fa-layer-group"></i> Mode Output</label>
-        <div id="play-rtmp-dropdown" class="rtmp-dropdown">
-          <button type="button" id="play-rtmp-dropdown-trigger" class="rtmp-dropdown-trigger" onclick="togglePlayRtmpDropdown()">
-            <span id="play-rtmp-dropdown-label">Per Stream</span>
-            <i class="fas fa-chevron-down"></i>
-          </button>
-          <div id="play-rtmp-dropdown-menu" class="rtmp-dropdown-menu">
-            <button type="button" class="rtmp-dropdown-item active" data-value="single" onclick="selectPlayRtmpMode('single', 'Per Stream')">
-              <span>Per Stream</span>
-              <i class="fas fa-check"></i>
-            </button>
-            <button type="button" class="rtmp-dropdown-item" data-value="quad" onclick="selectPlayRtmpMode('quad', '4 Channel')">
-              <span>4 Channel</span>
-              <i class="fas fa-check"></i>
-            </button>
-          </div>
+      <div style="flex:1;display:flex;justify-content:center;align-items:center;background:#000;border-radius:8px;overflow:hidden;margin-bottom:14px;min-height:400px;position:relative">
+        <video id="stream-video" style="width:100%;height:100%;object-fit:contain;background:#000" controls playsinline autoplay muted></video>
+        <div id="stream-loading" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;color:#fff;background:rgba(0,0,0,0.2)">
+          <i class="fas fa-spinner" style="font-size:32px;animation:spin 2s linear infinite;margin-bottom:10px;display:block"></i>
+          <p style="margin:0;font-size:14px">Loading stream...</p>
+        </div>
+        <div id="stream-error" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;color:#fff;background:rgba(0,0,0,0.72);text-align:center;padding:24px">
+          <i class="fas fa-triangle-exclamation" style="font-size:32px;color:#F87171;margin-bottom:10px"></i>
+          <p id="stream-error-text" style="margin:0;font-size:14px;line-height:1.5">Stream gagal dimuat.</p>
         </div>
       </div>
-      <div class="modal-form-actions" style="justify-content:flex-end;gap:10px;flex-wrap:wrap">
-        <button class="btn btn-primary" onclick="submitPlayRtmp()">
-          <i class="fas fa-circle-play"></i> Play
-        </button>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="closeStreamPlayerModal()">Tutup</button>
       </div>
     </div>
   </div>
@@ -297,35 +223,12 @@
         <input type="text" id="add-title" placeholder="contoh: Pasar Bantul" onkeydown="if(event.key==='Enter')addTrack()">
       </div>
       <div class="form-group">
-        <label><i class="fas fa-link"></i> URL RTMP / Stream <span class="req">*</span></label>
-        <input type="text" id="add-url" placeholder="rtmp://103.255.15.138:1935/..." onkeydown="if(event.key==='Enter')addTrack()" oninput="toggleDurationByUrl('add-duration', this.value)">
-      </div>
-      <div class="form-group">
-        <label><i class="fas fa-clock"></i> Durasi <span style="font-weight:normal;color:#888;font-size:0.85em">(detik)</span></label>
-        <input type="number" id="add-duration" placeholder="contoh: 30" min="1" onkeydown="if(event.key==='Enter')addTrack()">
+        <label><i class="fas fa-link"></i> URL Stream <span class="req">*</span></label>
+        <input type="text" id="add-url" placeholder="https://..." onkeydown="if(event.key==='Enter')addTrack()">
       </div>
       <div class="modal-form-actions">
         <button class="btn btn-outline" onclick="closeAddStreamModal()">Batal</button>
         <button class="btn btn-primary" onclick="addTrack()"><i class="fas fa-plus"></i> Tambah</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- MODAL: SET ALL DURATION -->
-  <div id="modal-set-all-duration" class="modal-form-overlay" onclick="_mfOverlayClick('modal-set-all-duration',event)">
-    <div class="modal-form-box">
-      <div class="modal-form-header">
-        <h3><i class="fas fa-sliders"></i> Set Semua Durasi</h3>
-        <button class="modal-form-close" onclick="closeSetAllDurationModal()"><i class="fas fa-xmark"></i></button>
-      </div>
-      <div class="form-group">
-        <label><i class="fas fa-clock"></i> Durasi Baru <span style="font-weight:normal;color:#888;font-size:0.85em">(detik)</span></label>
-        <input type="number" id="set-all-duration-input" placeholder="contoh: 30" min="1" onkeydown="if(event.key==='Enter')submitSetAllDuration()">
-      </div>
-      <p style="font-size:0.83em;color:#888;margin:-4px 0 12px">Track MP4 tidak akan terpengaruh — durasi mengikuti file sumber secara otomatis.</p>
-      <div class="modal-form-actions">
-        <button class="btn btn-outline" onclick="closeSetAllDurationModal()">Batal</button>
-        <button class="btn btn-primary" onclick="submitSetAllDuration()"><i class="fas fa-check"></i> Terapkan</button>
       </div>
     </div>
   </div>
@@ -346,6 +249,7 @@
   </div>
 
   <div id="toast" class="toast"></div>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>

@@ -2,13 +2,13 @@ import os
 import json
 import uuid
 import shutil
-import signal
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
 from xml.etree import ElementTree as ET
-from flask import Flask, jsonify, request, send_from_directory, send_file, Response
+from flask import Flask, jsonify, request, send_from_directory, send_file
 from flask_cors import CORS
 
 app = Flask(__name__, static_folder='static')
@@ -17,20 +17,12 @@ CORS(app)
 PLAYLISTS_DIR = os.path.join(os.path.dirname(__file__), 'playlists')
 META_FILE     = os.path.join(PLAYLISTS_DIR, '_meta.json')
 FFMPEG_BIN    = os.environ.get('FFMPEG_BIN') or shutil.which('ffmpeg') or 'ffmpeg'
-RTMP_PUBLISH_TEMPLATE = os.environ.get(
-    'RTMP_PUBLISH_TEMPLATE',
-    'rtmp://jitv:jitv@103.255.15.138:1935/live/{playlist}'
-)
-RTMP_PLAYBACK_TEMPLATE = os.environ.get(
-    'RTMP_PLAYBACK_TEMPLATE',
-    'rtmp://103.255.15.138:1935/live/{playlist}'
-)
-RTMP_RELAY_SUFFIX = os.environ.get('RTMP_RELAY_SUFFIX', '')
-DEFAULT_ROTATE_DELAY = int(os.environ.get('RTMP_ROTATE_DELAY_SECONDS', '30'))
 
 META_LOCK = threading.RLock()
-RTMP_LOCK = threading.RLock()
-RTMP_SESSIONS = {}
+HLS_PREVIEW_LOCK = threading.RLock()
+HLS_PREVIEW_SESSIONS = {}
+ACTIVE_PREVIEW = {'sessionId': None, 'clientId': None}
+PREVIEW_EVENTS = {}
 
 os.makedirs(PLAYLISTS_DIR, exist_ok=True)
 
@@ -71,78 +63,16 @@ def xspf_path(playlist_id):
         return os.path.join(PLAYLISTS_DIR, f'{fname}.xspf')
     return os.path.join(PLAYLISTS_DIR, f'{playlist_id}.xspf')
 
-def playlist_stream_key(playlist_name):
-    return sanitize_filename(playlist_name)
-
-def playlist_publish_key(playlist_name):
-    key = playlist_stream_key(playlist_name)
-    if RTMP_RELAY_SUFFIX:
-        return f'{key}{RTMP_RELAY_SUFFIX}'
-    return key
-
-def playlist_publish_url(playlist_name):
-    return RTMP_PUBLISH_TEMPLATE.format(playlist=playlist_publish_key(playlist_name))
-
-def playlist_playback_url(playlist_name):
-    return RTMP_PLAYBACK_TEMPLATE.format(playlist=playlist_stream_key(playlist_name))
-
 def get_playlist_by_id(playlist_id):
     return next((p for p in read_meta() if p['id'] == playlist_id), None)
-
-def set_playlist_status(playlist_id, status):
-    meta = read_meta()
-    playlist = next((p for p in meta if p['id'] == playlist_id), None)
-    if not playlist:
-        return None
-    playlist['rtmpStatus'] = status
-    playlist['updatedAt'] = datetime.now().isoformat()
-    write_meta(meta)
-    return playlist
-
-def session_snapshot(playlist_id):
-    with RTMP_LOCK:
-        session = RTMP_SESSIONS.get(playlist_id)
-        if not session:
-            return {
-                'running': False,
-                'mode': None,
-                'rotateDelaySeconds': None,
-                'pid': None,
-                'outputUrl': None,
-                'lastError': None,
-            }
-
-        process = session.get('process')
-        running = bool(process and process.poll() is None)
-        return {
-            'running': running,
-            'mode': session.get('mode'),
-            'rotateDelaySeconds': session.get('rotateDelaySeconds'),
-            'pid': process.pid if running else None,
-            'outputUrl': session.get('outputUrl'),
-            'playbackUrl': session.get('playbackUrl'),
-            'lastError': session.get('lastError'),
-            'startedAt': session.get('startedAt'),
-        }
 
 def _terminate_process(process, timeout=5):
     if process is None:
         return
     if process.poll() is not None:
         return
-
     try:
-        if process.stdin:
-            try:
-                process.stdin.write('q\n')
-                process.stdin.flush()
-            except Exception:
-                pass
-
-        if os.name == 'nt':
-            process.terminate()
-        else:
-            process.send_signal(signal.SIGTERM)
+        process.terminate()
         process.wait(timeout=timeout)
     except Exception:
         try:
@@ -150,386 +80,148 @@ def _terminate_process(process, timeout=5):
         except Exception:
             pass
 
-def _build_single_cycle_command(tracks, output_url, rotate_delay_seconds):
-    prepared = []
-    for idx, track in enumerate(tracks):
-        input_url = (track.get('url') or '').strip()
-        if not input_url:
-            raise RuntimeError(f'Track ke-{idx + 1} tidak memiliki URL')
+def _cleanup_hls_preview_session(session_id):
+    with HLS_PREVIEW_LOCK:
+        session = HLS_PREVIEW_SESSIONS.pop(session_id, None)
+        if ACTIVE_PREVIEW.get('sessionId') == session_id:
+            ACTIVE_PREVIEW['sessionId'] = None
+            ACTIVE_PREVIEW['clientId'] = None
 
-        track_duration_ms = track.get('duration')
+    if not session:
+        return
+
+    process = session.get('process')
+    temp_dir = session.get('tempDir')
+    _terminate_process(process)
+
+    if temp_dir and os.path.exists(temp_dir):
         try:
-            track_duration_ms = int(track_duration_ms) if track_duration_ms is not None else None
-        except (TypeError, ValueError):
-            track_duration_ms = None
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
-        if track_duration_ms and track_duration_ms > 0:
-            track_seconds = max(1, round(track_duration_ms / 1000))
-        else:
-            track_seconds = max(1, rotate_delay_seconds or DEFAULT_ROTATE_DELAY)
-
-        prepared.append({
-            'url': input_url,
-            'seconds': track_seconds,
+def _queue_preview_event(client_id, event_type, message):
+    if not client_id:
+        return
+    with HLS_PREVIEW_LOCK:
+        queue = PREVIEW_EVENTS.setdefault(client_id, [])
+        queue.append({
+            'type': event_type,
+            'message': message,
+            'at': datetime.now().isoformat(),
         })
+        if len(queue) > 20:
+            del queue[:-20]
 
-    if not prepared:
-        raise RuntimeError('Playlist tidak memiliki stream')
+def _pop_preview_events(client_id):
+    if not client_id:
+        return []
+    with HLS_PREVIEW_LOCK:
+        return PREVIEW_EVENTS.pop(client_id, [])
 
-    command = [
+def _build_hls_preview_command(input_url, output_dir):
+    playlist_path = os.path.join(output_dir, 'index.m3u8')
+    segment_pattern = os.path.join(output_dir, 'segment_%05d.ts')
+    return [
         FFMPEG_BIN,
         '-hide_banner',
-        '-loglevel', 'info',
-    ]
-
-    filter_parts = []
-    for idx, item in enumerate(prepared):
-        command += [
-            '-thread_queue_size', '1024',
-            '-rw_timeout', '15000000',
-            '-fflags', '+discardcorrupt',
-            '-err_detect', 'ignore_err',
-            '-re',
-            '-t', str(item['seconds']),
-            '-i', item['url'],
-        ]
-        filter_parts.append(
-            f'[{idx}:v:0]fps=15,scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,setpts=PTS-STARTPTS[v{idx}]'
-        )
-
-    total_seconds = sum(item['seconds'] for item in prepared)
-    concat_inputs = ''.join(f'[v{idx}]' for idx in range(len(prepared)))
-    filter_parts.append(f'{concat_inputs}concat=n={len(prepared)}:v=1:a=0[vout]')
-
-    command += [
-        '-f', 'lavfi',
-        '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-        '-filter_complex', ';'.join(filter_parts),
-        '-map', '[vout]',
-        '-map', f'{len(prepared)}:a:0',
-        '-c:v', 'libx264',
-        '-tune', 'zerolatency',
-        '-preset', 'superfast',
-        '-x264-params', 'keyint=30:min-keyint=30:scenecut=0',
-        '-maxrate', '1200k',
-        '-bufsize', '2400k',
-        '-pix_fmt', 'yuv420p',
-        '-g', '30',
-        '-c:a', 'aac',
-        '-b:a', '64k',
-        '-ar', '44100',
-        '-t', str(total_seconds),
-        '-rtmp_live', 'live',
-        '-flvflags', 'no_duration_filesize',
-        '-f', 'flv',
-        output_url,
-    ]
-
-    return command
-
-def _build_quad_command(inputs, output_url):
-    layout = '0_0|960_0|0_540|960_540'
-    filter_complex = (
-        '[0:v]fps=15,scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v0];'
-        '[1:v]fps=15,scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v1];'
-        '[2:v]fps=15,scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v2];'
-        '[3:v]fps=15,scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p[v3];'
-        f'[v0][v1][v2][v3]xstack=inputs=4:layout={layout}[v]'
-    )
-
-    command = [
-        FFMPEG_BIN,
-        '-hide_banner',
-        '-loglevel', 'info',
+        '-loglevel', 'error',
+        '-thread_queue_size', '1024',
+        '-rw_timeout', '15000000',
+        '-fflags', '+discardcorrupt',
+        '-err_detect', 'ignore_err',
         '-re',
-        '-fflags', '+genpts',
-        '-use_wallclock_as_timestamps', '1',
-    ]
-    for input_url in inputs:
-        command += ['-i', input_url]
-    command += ['-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100']
-    command += [
-        '-filter_complex', filter_complex,
-        '-map', '[v]',
-        '-map', '4:a:0',
+        '-i', input_url,
+        '-an',
+        '-vf', 'fps=15,scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p',
         '-c:v', 'libx264',
         '-tune', 'zerolatency',
         '-preset', 'veryfast',
-        '-maxrate', '4000k',
-        '-bufsize', '8000k',
+        '-profile:v', 'baseline',
+        '-level', '3.0',
         '-pix_fmt', 'yuv420p',
-        '-g', '60',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-ar', '44100',
-        '-flvflags', 'no_duration_filesize',
-        '-f', 'flv',
-        output_url,
+        '-g', '30',
+        '-keyint_min', '30',
+        '-sc_threshold', '0',
+        '-f', 'hls',
+        '-hls_time', '2',
+        '-hls_list_size', '6',
+        '-hls_flags', 'delete_segments+append_list+independent_segments+omit_endlist',
+        '-hls_segment_filename', segment_pattern,
+        playlist_path,
     ]
-    return command
 
-def _build_quad_batches(tracks):
-    if len(tracks) < 4:
-        raise RuntimeError('Mode 4 Channel membutuhkan minimal 4 stream')
+def _create_hls_preview_session(playlist_id, track_index, client_id):
+    path = xspf_path(playlist_id)
+    if not os.path.exists(path):
+        return None, 'Playlist tidak ditemukan'
 
-    urls = []
-    for idx, track in enumerate(tracks):
-        input_url = (track.get('url') or '').strip()
-        if not input_url:
-            raise RuntimeError(f'Track ke-{idx + 1} tidak memiliki URL')
-        urls.append(input_url)
+    tracks = parse_xspf(path)
+    if track_index < 0 or track_index >= len(tracks):
+        return None, 'Index stream tidak valid'
 
-    batches = []
-    start = 0
-    total = len(urls)
-    while start < total:
-        batch = [urls[(start + offset) % total] for offset in range(4)]
-        batches.append(batch)
-        start += 4
-    return batches
+    track = tracks[track_index]
+    source_url = (track.get('url') or '').strip()
+    if not source_url:
+        return None, 'URL stream kosong'
 
-def _drain_process_logs(playlist_id, process):
-    try:
-        for line in process.stderr:
-            if not line:
-                break
-            text = line.rstrip()
-            if text:
-                app.logger.info('[RTMP %s] %s', playlist_id, text)
-    except Exception as exc:
-        app.logger.exception('Gagal membaca log FFmpeg untuk playlist %s: %s', playlist_id, exc)
+    previous_session_id = None
+    previous_client_id = None
+    with HLS_PREVIEW_LOCK:
+        previous_session_id = ACTIVE_PREVIEW.get('sessionId')
+        previous_client_id = ACTIVE_PREVIEW.get('clientId')
 
-def _spawn_ffmpeg(command, playlist_id, mode, rotate_delay_seconds, output_url):
+    if previous_session_id:
+        _cleanup_hls_preview_session(previous_session_id)
+        if previous_client_id and previous_client_id != client_id:
+            _queue_preview_event(
+                previous_client_id,
+                'preview_taken_over',
+                'Preview sedang dijalankan di device lain.',
+            )
+
+    session_id = uuid.uuid4().hex
+    temp_dir = tempfile.mkdtemp(prefix=f'cctv-hls-{playlist_id}-{track_index}-')
+    command = _build_hls_preview_command(source_url, temp_dir)
+
     process = subprocess.Popen(
         command,
-        stdin=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         text=True,
         bufsize=1,
     )
 
-    worker = threading.Thread(target=_drain_process_logs, args=(playlist_id, process), daemon=True)
-    worker.start()
-
-    with RTMP_LOCK:
-        session = RTMP_SESSIONS.setdefault(playlist_id, {})
-        session['process'] = process
-        session['mode'] = mode
-        session['rotateDelaySeconds'] = rotate_delay_seconds
-        session['outputUrl'] = output_url
-        session['lastError'] = None
-        session['startedAt'] = datetime.now().isoformat()
-
-    return process
-
-def _run_rtmp_worker(playlist_id, mode, rotate_delay_seconds, output_url):
-    try:
-        tracks = parse_xspf(xspf_path(playlist_id))
-        if not tracks:
-            raise RuntimeError('Playlist tidak memiliki stream')
-
-        if mode == 'quad':
-            while True:
-                with RTMP_LOCK:
-                    session = RTMP_SESSIONS.get(playlist_id)
-                    stop_event = session.get('stop_event') if session else None
-                    if not session or (stop_event and stop_event.is_set()):
-                        break
-
-                tracks = parse_xspf(xspf_path(playlist_id))
-                batches = _build_quad_batches(tracks)
-
-                for batch in batches:
-                    with RTMP_LOCK:
-                        session = RTMP_SESSIONS.get(playlist_id)
-                        stop_event = session.get('stop_event') if session else None
-                        if not session or (stop_event and stop_event.is_set()):
-                            return
-
-                    command = _build_quad_command(batch, output_url)
-                    process = _spawn_ffmpeg(command, playlist_id, mode, rotate_delay_seconds, output_url)
-
-                    deadline = None if rotate_delay_seconds <= 0 else time.monotonic() + rotate_delay_seconds
-                    while True:
-                        if process.poll() is not None:
-                            with RTMP_LOCK:
-                                session = RTMP_SESSIONS.get(playlist_id)
-                                stop_event = session.get('stop_event') if session else None
-                            if stop_event and stop_event.is_set():
-                                break
-                            if process.returncode != 0:
-                                raise RuntimeError(f'FFmpeg berhenti dengan kode {process.returncode}')
-                            break
-
-                        with RTMP_LOCK:
-                            session = RTMP_SESSIONS.get(playlist_id)
-                            stop_event = session.get('stop_event') if session else None
-                            if not session or (stop_event and stop_event.is_set()):
-                                _terminate_process(process)
-                                return
-
-                        if deadline is not None and time.monotonic() >= deadline:
-                            break
-                        time.sleep(0.5)
-
-                    if deadline is None:
-                        return
-
-                    _terminate_process(process)
-
-        else:
-            while True:
-                with RTMP_LOCK:
-                    session = RTMP_SESSIONS.get(playlist_id)
-                    stop_event = session.get('stop_event') if session else None
-                    if not session or (stop_event and stop_event.is_set()):
-                        break
-
-                # Gunakan satu proses FFmpeg untuk satu siklus playlist penuh agar output RTMP lebih stabil.
-                tracks = parse_xspf(xspf_path(playlist_id))
-                command = _build_single_cycle_command(tracks, output_url, rotate_delay_seconds)
-                process = _spawn_ffmpeg(command, playlist_id, mode, rotate_delay_seconds, output_url)
-
-                while True:
-                    if process.poll() is not None:
-                        with RTMP_LOCK:
-                            session = RTMP_SESSIONS.get(playlist_id)
-                            stop_event = session.get('stop_event') if session else None
-                        if stop_event and stop_event.is_set():
-                            break
-                        if process.returncode != 0:
-                            raise RuntimeError(f'FFmpeg berhenti dengan kode {process.returncode}')
-                        break
-
-                    with RTMP_LOCK:
-                        session = RTMP_SESSIONS.get(playlist_id)
-                        stop_event = session.get('stop_event') if session else None
-                        if not session or (stop_event and stop_event.is_set()):
-                            _terminate_process(process)
-                            return
-
-                    time.sleep(0.3)
-
-                _terminate_process(process, timeout=2)
-                time.sleep(0.2)
-
-    except Exception as exc:
-        app.logger.exception('Gagal menjalankan RTMP untuk playlist %s: %s', playlist_id, exc)
-        with RTMP_LOCK:
-            session = RTMP_SESSIONS.get(playlist_id)
-            if session:
-                session['lastError'] = str(exc)
-                session['running'] = False
-        set_playlist_status(playlist_id, 'pause')
-    finally:
-        with RTMP_LOCK:
-            session = RTMP_SESSIONS.get(playlist_id)
-            if session:
-                session['running'] = False
-                process = session.get('process')
-                if process and process.poll() is None:
-                    _terminate_process(process)
-        
-
-def start_rtmp_session(playlist_id, mode, rotate_delay_seconds=None):
-    playlist = get_playlist_by_id(playlist_id)
-    if not playlist:
-        return None, 'Playlist tidak ditemukan'
-
-    if shutil.which(FFMPEG_BIN) is None and not os.path.exists(FFMPEG_BIN):
-        return None, 'FFmpeg tidak ditemukan di sistem'
-
-    tracks = parse_xspf(xspf_path(playlist_id))
-    if not tracks:
-        return None, 'Playlist tidak memiliki stream'
-
-    mode = (mode or '').strip().lower()
-    if mode not in {'single', 'quad'}:
-        return None, 'Mode tidak valid'
-
-    try:
-        rotate_delay_seconds = int(rotate_delay_seconds if rotate_delay_seconds is not None else DEFAULT_ROTATE_DELAY)
-    except (TypeError, ValueError):
-        rotate_delay_seconds = DEFAULT_ROTATE_DELAY
-
-    if rotate_delay_seconds < 0:
-        rotate_delay_seconds = 0
-
-    if mode == 'quad' and len(tracks) < 4:
-        return None, 'Mode 4 Channel membutuhkan minimal 4 stream'
-
-    stop_rtmp_session(playlist_id)
-
-    output_url = playlist_publish_url(playlist['name'])
-    playback_url = playlist_playback_url(playlist['name'])
-    stop_event = threading.Event()
-
-    with RTMP_LOCK:
-        RTMP_SESSIONS[playlist_id] = {
-            'process': None,
-            'thread': None,
-            'stop_event': stop_event,
-            'running': True,
-            'mode': mode,
-            'rotateDelaySeconds': rotate_delay_seconds,
-            'outputUrl': output_url,
-            'playbackUrl': playback_url,
-            'lastError': None,
+    with HLS_PREVIEW_LOCK:
+        HLS_PREVIEW_SESSIONS[session_id] = {
+            'process': process,
+            'tempDir': temp_dir,
+            'playlistId': playlist_id,
+            'trackIndex': track_index,
+            'sourceUrl': source_url,
+            'title': track.get('title') or f'Stream {track_index + 1}',
             'startedAt': datetime.now().isoformat(),
+            'clientId': client_id,
         }
+        ACTIVE_PREVIEW['sessionId'] = session_id
+        ACTIVE_PREVIEW['clientId'] = client_id
 
-    worker = threading.Thread(
-        target=_run_rtmp_worker,
-        args=(playlist_id, mode, rotate_delay_seconds, output_url),
-        daemon=True,
-    )
-    with RTMP_LOCK:
-        RTMP_SESSIONS[playlist_id]['thread'] = worker
-    worker.start()
+    return {
+        'sessionId': session_id,
+        'manifestUrl': f'/api/hls-preview/{session_id}/index.m3u8',
+        'title': track.get('title') or f'Stream {track_index + 1}',
+        'sourceUrl': source_url,
+    }, None
 
-    set_playlist_status(playlist_id, 'play')
-    return session_snapshot(playlist_id), None
-
-def stop_rtmp_session(playlist_id):
-    thread = None
-    process = None
-    with RTMP_LOCK:
-        session = RTMP_SESSIONS.get(playlist_id)
-        if not session:
-            set_playlist_status(playlist_id, 'pause')
-            return {'running': False}
-        session['stop_event'].set()
-        process = session.get('process')
-        thread = session.get('thread')
-
-    _terminate_process(process)
-
-    with RTMP_LOCK:
-        RTMP_SESSIONS.pop(playlist_id, None)
-
-    if thread and thread.is_alive():
-        thread.join(timeout=2)
-
-    set_playlist_status(playlist_id, 'pause')
-    return {'running': False}
+def _get_hls_preview_session(session_id):
+    with HLS_PREVIEW_LOCK:
+        return HLS_PREVIEW_SESSIONS.get(session_id)
 
 # ─── HELPER XSPF ─────────────────────────────────────────────
 
-def build_xspf(playlist_name, tracks, rotate_seconds=None):
-    """Buat string XML XSPF dari list tracks [{'title': ..., 'url': ..., 'duration': ...}]"""
-    use_track_duration = False
-    if isinstance(rotate_seconds, str) and rotate_seconds.strip().lower() in {'list', 'track', 'track-duration'}:
-        use_track_duration = True
-        rotate_seconds = None
-    else:
-        try:
-            rotate_seconds = int(rotate_seconds) if rotate_seconds is not None else None
-        except (TypeError, ValueError):
-            rotate_seconds = None
-
-        if rotate_seconds is not None and rotate_seconds < 1:
-            rotate_seconds = None
+def build_xspf(playlist_name, tracks):
+    """Buat string XML XSPF dari list tracks [{'title': ..., 'url': ...}]"""
 
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -542,28 +234,8 @@ def build_xspf(playlist_name, tracks, rotate_seconds=None):
             '    <track>',
             f'      <location>{_esc(t.get("url", ""))}</location>',
             f'      <title>{_esc(t.get("title", ""))}</title>',
-        ]
-        if t.get('duration') is not None:
-            lines.append(f'      <duration>{int(t["duration"])}</duration>')
-        lines += [
             '      <extension application="http://www.videolan.org/vlc/playlist/0">',
             f'        <vlc:id>{i}</vlc:id>',
-        ]
-        if use_track_duration:
-            duration_ms = t.get('duration')
-            try:
-                duration_ms = int(duration_ms) if duration_ms is not None else None
-            except (TypeError, ValueError):
-                duration_ms = None
-
-            if duration_ms and duration_ms > 0:
-                run_time = max(1, round(duration_ms / 1000))
-            else:
-                run_time = DEFAULT_ROTATE_DELAY
-            lines.append(f'        <vlc:option>run-time={run_time}</vlc:option>')
-        elif rotate_seconds is not None:
-            lines.append(f'        <vlc:option>run-time={rotate_seconds}</vlc:option>')
-        lines += [
             '      </extension>',
             '    </track>',
         ]
@@ -582,16 +254,10 @@ def parse_xspf(file_path):
         for track in root.findall('.//xspf:track', ns):
             loc      = track.find('xspf:location', ns)
             title    = track.find('xspf:title', ns)
-            duration = track.find('xspf:duration', ns)
             t = {
                 'url':   loc.text.strip()   if loc   is not None and loc.text   else '',
                 'title': title.text.strip() if title is not None and title.text else '',
             }
-            if duration is not None and duration.text:
-                try:
-                    t['duration'] = int(duration.text.strip())
-                except ValueError:
-                    pass
             tracks.append(t)
         return tracks
     except Exception:
@@ -644,20 +310,15 @@ def get_playlists():
     playlists = read_meta()
     meta_dirty = False
     for p in playlists:
+        # Bersihkan field legacy RTMP dari versi sebelumnya
+        for legacy_key in ('rtmpStatus', 'rtmpRunning', 'rtmpMode', 'rtmpRotateDelaySeconds', 'rtmpLastError'):
+            if legacy_key in p:
+                p.pop(legacy_key, None)
+                meta_dirty = True
         try:
             p['track_count'] = len(parse_xspf(xspf_path(p['id'])))
         except Exception:
             p['track_count'] = 0
-        session = session_snapshot(p['id'])
-        # Service restart akan mengosongkan session runtime.
-        # Jika meta masih "play" tapi tidak ada process aktif, paksa kembali ke "pause".
-        if not session['running'] and (p.get('rtmpStatus') or 'pause').lower() == 'play':
-            p['rtmpStatus'] = 'pause'
-            meta_dirty = True
-        p['rtmpRunning'] = session['running']
-        p['rtmpMode'] = session['mode']
-        p['rtmpRotateDelaySeconds'] = session['rotateDelaySeconds']
-        p['rtmpLastError'] = session['lastError']
     if meta_dirty:
         write_meta(playlists)
     return jsonify(playlists)
@@ -684,7 +345,6 @@ def create_playlist():
         'name':        name,
         'filename':    safe_name,       # ← simpan nama file di meta
         'description': desc,
-        'rtmpStatus':  'pause',
         'createdAt':   datetime.now().isoformat(),
         'updatedAt':   None
     }
@@ -720,46 +380,6 @@ def update_playlist(pl_id):
     write_meta(meta)
     return jsonify(pl)
 
-@app.route('/api/playlists/<pl_id>/rtmp-status', methods=['POST'])
-def update_playlist_rtmp_status(pl_id):
-    data = request.get_json() or {}
-    status = (data.get('status') or '').strip().lower()
-
-    if status not in {'play', 'pause'}:
-        return jsonify({'error': 'Status tidak valid'}), 400
-
-    playlist = get_playlist_by_id(pl_id)
-    if not playlist:
-        return jsonify({'error': 'Playlist tidak ditemukan'}), 404
-
-    if status == 'play':
-        mode = data.get('mode')
-        rotate_delay_seconds = data.get('rotateDelaySeconds')
-        session, error = start_rtmp_session(pl_id, mode, rotate_delay_seconds)
-        if error:
-            return jsonify({'error': error}), 400
-        updated = get_playlist_by_id(pl_id) or playlist
-        return jsonify({
-            'success': True,
-            'playlist': updated,
-            'session': session,
-        })
-
-    stop_rtmp_session(pl_id)
-    updated = get_playlist_by_id(pl_id) or playlist
-    return jsonify({
-        'success': True,
-        'playlist': updated,
-        'session': session_snapshot(pl_id),
-    })
-
-@app.route('/api/playlists/<pl_id>/rtmp-session', methods=['GET'])
-def get_playlist_rtmp_session(pl_id):
-    playlist = get_playlist_by_id(pl_id)
-    if not playlist:
-        return jsonify({'error': 'Playlist tidak ditemukan'}), 404
-    return jsonify(session_snapshot(pl_id))
-
 @app.route('/api/playlists/<pl_id>', methods=['DELETE'])
 def delete_playlist(pl_id):
     path = xspf_path(pl_id)
@@ -781,30 +401,6 @@ def download_playlist_xspf(pl_id):
     filename = f"{sanitize_filename(pl['name']) if pl else pl_id}.xspf"
     return send_file(path, as_attachment=True, download_name=filename)
 
-@app.route('/api/playlists/<pl_id>/xspf', methods=['GET'])
-def serve_playlist_xspf(pl_id):
-    playlist = get_playlist_by_id(pl_id)
-    if not playlist:
-        return jsonify({'error': 'Playlist tidak ditemukan'}), 404
-
-    tracks = parse_xspf(xspf_path(pl_id))
-    rotate_raw = request.args.get('rotate')
-    rotate_seconds = None
-    if rotate_raw is not None and str(rotate_raw).strip() != '':
-        rotate_clean = str(rotate_raw).strip().lower()
-        if rotate_clean in {'list', 'track', 'track-duration'}:
-            rotate_seconds = 'list'
-        else:
-            try:
-                rotate_seconds = int(rotate_raw)
-            except (TypeError, ValueError):
-                return jsonify({'error': 'Parameter rotate harus angka (detik) atau "list"'}), 400
-            if rotate_seconds < 1 or rotate_seconds > 3600:
-                return jsonify({'error': 'Parameter rotate harus antara 1-3600 detik'}), 400
-
-    content = build_xspf(playlist['name'], tracks, rotate_seconds=rotate_seconds)
-    return Response(content, mimetype='application/xspf+xml')
-
 # ─── API: TRACKS ─────────────────────────────────────────────
 
 @app.route('/api/playlists/<pl_id>/tracks', methods=['GET'])
@@ -819,7 +415,6 @@ def add_track(pl_id):
     data     = request.get_json()
     title    = (data.get('title') or '').strip()
     url      = (data.get('url')   or '').strip()
-    duration = data.get('duration')
 
     if not title or not url:
         return jsonify({'error': 'Title dan URL wajib diisi'}), 400
@@ -830,11 +425,6 @@ def add_track(pl_id):
 
     tracks = parse_xspf(path)
     track  = {'title': title, 'url': url}
-    if duration is not None:
-        try:
-            track['duration'] = int(duration)
-        except (ValueError, TypeError):
-            pass
     tracks.append(track)
     save_xspf(pl_id, tracks)
     update_playlist_timestamp(pl_id)
@@ -857,17 +447,6 @@ def update_track(pl_id, index):
         'title': data.get('title', existing['title']),
         'url':   data.get('url',   existing['url']),
     }
-    if 'duration' in data:
-        if data['duration'] is not None:
-            try:
-                val = int(data['duration'])
-                if val > 0:
-                    updated['duration'] = val
-            except (ValueError, TypeError):
-                pass
-        # duration: null → tidak disimpan (hapus durasi)
-    elif existing.get('duration') is not None:
-        updated['duration'] = existing['duration']  # preserve
 
     tracks[index] = updated
     save_xspf(pl_id, tracks)
@@ -906,16 +485,69 @@ def bulk_add_tracks(pl_id):
         if not url:
             continue
         track = {'title': title, 'url': url}
-        if t.get('duration') is not None:
-            try:
-                track['duration'] = int(t['duration'])
-            except (ValueError, TypeError):
-                pass
         tracks.append(track)
 
     save_xspf(pl_id, tracks)
     update_playlist_timestamp(pl_id)
     return jsonify({'success': True, 'count': len(tracks)})
+
+@app.route('/api/playlists/<pl_id>/tracks/<int:index>/preview/start', methods=['POST'])
+def start_track_preview(pl_id, index):
+    data = request.get_json(silent=True) or {}
+    client_id = (data.get('clientId') or '').strip() or 'anonymous'
+    preview, error = _create_hls_preview_session(pl_id, index, client_id)
+    if error:
+        return jsonify({'error': error}), 400
+    return jsonify(preview)
+
+@app.route('/api/preview/events', methods=['GET'])
+def get_preview_events():
+    client_id = (request.args.get('clientId') or '').strip()
+    return jsonify({'events': _pop_preview_events(client_id)})
+
+@app.route('/api/preview/active', methods=['GET'])
+def get_active_preview():
+    with HLS_PREVIEW_LOCK:
+        session_id = ACTIVE_PREVIEW.get('sessionId')
+        client_id = ACTIVE_PREVIEW.get('clientId')
+    return jsonify({
+        'sessionId': session_id,
+        'clientId': client_id,
+    })
+
+@app.route('/api/hls-preview/<session_id>/stop', methods=['POST'])
+def stop_hls_preview(session_id):
+    _cleanup_hls_preview_session(session_id)
+    return jsonify({'success': True})
+
+@app.route('/api/hls-preview/<session_id>/<path:filename>', methods=['GET'])
+def serve_hls_preview_file(session_id, filename):
+    session = _get_hls_preview_session(session_id)
+    if not session:
+        return jsonify({'error': 'Preview session tidak ditemukan'}), 404
+
+    temp_dir = session.get('tempDir')
+    if not temp_dir or not os.path.exists(temp_dir):
+        return jsonify({'error': 'Preview directory tidak ditemukan'}), 404
+
+    file_path = os.path.join(temp_dir, filename)
+    if not os.path.exists(file_path):
+        if filename.endswith('.m3u8'):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not os.path.exists(file_path):
+                process = session.get('process')
+                if process and process.poll() is not None:
+                    break
+                time.sleep(0.2)
+
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'File preview belum siap'}), 404
+
+    response = send_from_directory(temp_dir, filename)
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 @app.route('/api/playlists/<pl_id>/tracks/move', methods=['POST'])
 def move_track(pl_id):

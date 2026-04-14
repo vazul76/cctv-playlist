@@ -10,13 +10,27 @@ let _skipHashPush = false;
 // Track change detection
 let _originalTracks = [];          // Original track state from API
 let _tracksWithChanges = new Set(); // Set of track indices with unsaved changes
+let _originalPlaylistMeta = { name: '', description: '' };
+let _playlistMetaDirty = false;
+let _hlsPlayer = null;
+let _currentPreviewSessionId = null;
+let _previewEventTimer = null;
+let _previewClientId = sessionStorage.getItem('previewClientId') || '';
+let _previewTakeoverNotified = false;
+
+if (!_previewClientId) {
+  _previewClientId = (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  sessionStorage.setItem('previewClientId', _previewClientId);
+}
 
 // ─── NAVIGASI ─────────────────────────────────────────────────
 function navigate(page, data = {}) {
   // Check for unsaved track changes when leaving playlist-detail
   const detailPageActive = document.getElementById('page-playlist-detail')?.classList.contains('active');
   const leavingDetailPage = detailPageActive && page !== 'playlist-detail';
-  if (leavingDetailPage && currentPlaylistId && _tracksWithChanges.size > 0) {
+  if (leavingDetailPage && currentPlaylistId && (_tracksWithChanges.size > 0 || _playlistMetaDirty)) {
     showUnsavedChangesModal(page, data);
     return; // Don't navigate yet
   }
@@ -114,50 +128,6 @@ function showToast(msg, color = '#27ae60') {
   setTimeout(() => { t.style.display = 'none'; }, 2800);
 }
 
-function openPlayRtmpDropdown() {
-  document.getElementById('play-rtmp-dropdown')?.classList.add('open');
-}
-
-function closePlayRtmpDropdown() {
-  document.getElementById('play-rtmp-dropdown')?.classList.remove('open');
-}
-
-function togglePlayRtmpDropdown() {
-  const dropdown = document.getElementById('play-rtmp-dropdown');
-  if (!dropdown) return;
-  dropdown.classList.toggle('open');
-}
-
-function selectPlayRtmpMode(value, label) {
-  const hidden = document.getElementById('play-rtmp-mode');
-  const labelEl = document.getElementById('play-rtmp-dropdown-label');
-  const delayEl = document.getElementById('play-rtmp-delay');
-  if (hidden) hidden.value = value;
-  if (labelEl) labelEl.textContent = label;
-
-  document.querySelectorAll('.rtmp-dropdown-item').forEach(item => {
-    item.classList.toggle('active', item.dataset.value === value);
-  });
-
-  if (delayEl) {
-    const singleMode = value === 'single';
-    delayEl.disabled = singleMode;
-    delayEl.title = singleMode
-      ? 'Mode Per Stream memakai Durasi (detik) dari daftar stream'
-      : '';
-  }
-
-  closePlayRtmpDropdown();
-}
-
-document.addEventListener('click', (event) => {
-  const dropdown = document.getElementById('play-rtmp-dropdown');
-  if (!dropdown) return;
-  if (!dropdown.contains(event.target)) {
-    dropdown.classList.remove('open');
-  }
-});
-
 // ─── FORMAT WAKTU ─────────────────────────────────────────────
 function fmtTime(s) {
   const m   = Math.floor(s / 60);
@@ -178,41 +148,6 @@ function escAttr(s) {
   return String(s || '').replace(/'/g, "\\'");
 }
 
-function normalizeRtmpPlaylistName(name) {
-  return String(name || '')
-    .trim()
-    .replace(/[\\/*?:"<>|]/g, '')
-    .replace(/\s+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '') || 'playlist';
-}
-
-function buildPlaylistRtmpUrl(name) {
-  return `rtmp://103.255.15.138:1935/live/${normalizeRtmpPlaylistName(name)}`;
-}
-
-function buildPlaylistXspfUrl(id) {
-  const base = `${window.location.origin}${API}/playlists/${encodeURIComponent(id)}/xspf`;
-  return `${base}?rotate=list`;
-}
-
-async function copyTextToClipboard(text) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const temp = document.createElement('textarea');
-  temp.value = text;
-  temp.setAttribute('readonly', 'true');
-  temp.style.position = 'fixed';
-  temp.style.left = '-9999px';
-  document.body.appendChild(temp);
-  temp.select();
-  document.execCommand('copy');
-  document.body.removeChild(temp);
-}
-
 // ─── DASHBOARD ────────────────────────────────────────────────
 async function loadDashboard() {
   const playlists = await fetch(`${API}/playlists`).then(r => r.json()).catch(() => []);
@@ -223,10 +158,6 @@ async function loadDashboard() {
   const totalTracks = playlists.reduce((sum, p) => sum + (p.track_count || 0), 0);
   const totalTrEl = document.getElementById('dash-total-tracks');
   if (totalTrEl) totalTrEl.textContent = totalTracks;
-
-  const totalActiveRtmp = playlists.filter(p => Boolean(p.rtmpRunning || (p.rtmpStatus || 'pause') === 'play')).length;
-  const activeRtmpEl = document.getElementById('dash-active-rtmp');
-  if (activeRtmpEl) activeRtmpEl.textContent = totalActiveRtmp;
 }
 
 // ─── PLAYLISTS ────────────────────────────────────────────────
@@ -245,138 +176,150 @@ function closeAddPlaylistModal() {
 function openAddStreamModal() {
   document.getElementById('add-title').value    = '';
   document.getElementById('add-url').value      = '';
-  document.getElementById('add-duration').value = '30';
-  toggleDurationByUrl('add-duration', '');
   document.getElementById('modal-add-stream').classList.add('active');
   setTimeout(() => document.getElementById('add-title').focus(), 80);
 }
 
-function openPlayRtmpModal(id, name, trackCount) {
-  const modal = document.getElementById('modal-play-rtmp');
-  const idEl = document.getElementById('play-rtmp-id');
-  const nameEl = document.getElementById('play-rtmp-name');
-  const trackCountEl = document.getElementById('play-rtmp-track-count');
-  const previewEl = document.getElementById('play-rtmp-preview');
-  const xspfPreviewEl = document.getElementById('play-xspf-preview');
-  const modeHidden = document.getElementById('play-rtmp-mode');
-  const delayEl = document.getElementById('play-rtmp-delay');
-  if (!modal || !idEl || !nameEl || !trackCountEl || !previewEl) return;
+function _setStreamOverlayState({ loading = false, error = '' } = {}) {
+  const loadingEl = document.getElementById('stream-loading');
+  const errorEl = document.getElementById('stream-error');
+  const errorTextEl = document.getElementById('stream-error-text');
 
-  idEl.value = id;
-  nameEl.value = name;
-  trackCountEl.value = String(trackCount || 0);
-  previewEl.textContent = buildPlaylistRtmpUrl(name);
-  if (xspfPreviewEl) {
-    xspfPreviewEl.textContent = buildPlaylistXspfUrl(id);
-  }
-  if (modeHidden) modeHidden.value = 'single';
-  selectPlayRtmpMode('single', 'Per Stream');
-  if (delayEl && !delayEl.value) delayEl.value = String(Math.max(1, Number(localStorage.getItem('playRtmpDelaySeconds') || '30')));
+  if (loadingEl) loadingEl.style.display = loading ? 'flex' : 'none';
+  if (errorEl) errorEl.style.display = error ? 'flex' : 'none';
+  if (errorTextEl && error) errorTextEl.textContent = error;
+}
+
+async function openStreamPlayerModal(playlistId, trackIndex, title) {
+  const modal = document.getElementById('modal-stream-player');
+  const titleEl = document.getElementById('player-title');
+  const video = document.getElementById('stream-video');
+
+  if (!modal || !titleEl || !video) return;
+
+  closeStreamPlayerModal();
+
+  titleEl.innerHTML = `<i class="fas fa-play-circle"></i> ${escHtml(title)}`;
+  _setStreamOverlayState({ loading: true, error: '' });
   modal.classList.add('active');
-}
-
-async function copyPlayXspfUrl() {
-  const id = document.getElementById('play-rtmp-id')?.value;
-  if (!id) {
-    showToast('❌ Playlist belum dipilih', '#DC2626');
-    return;
-  }
 
   try {
-    const xspfUrl = buildPlaylistXspfUrl(id);
-    await copyTextToClipboard(xspfUrl);
-    showToast('✅ URL XSPF tersalin ke clipboard');
-  } catch {
-    showToast('❌ Gagal menyalin URL XSPF', '#DC2626');
-  }
-}
-
-function closePlayRtmpModal() {
-  document.getElementById('modal-play-rtmp')?.classList.remove('active');
-}
-
-async function updatePlaylistRtmpStatus(id, status) {
-  try {
-    const delaySeconds = parseInt(document.getElementById('play-rtmp-delay')?.value || '30', 10);
-    const mode = document.getElementById('play-rtmp-mode')?.value || 'single';
-    const r = await fetch(`${API}/playlists/${id}/rtmp-status`, {
+    const response = await fetch(`${API}/playlists/${encodeURIComponent(playlistId)}/tracks/${trackIndex}/preview/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status,
-        mode,
-        rotateDelaySeconds: mode === 'quad' && Number.isFinite(delaySeconds) ? delaySeconds : null,
-      })
+      body: JSON.stringify({ clientId: _previewClientId }),
     });
-    return await r.json();
-  } catch {
-    return null;
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Gagal memulai preview stream');
+    }
+
+    _currentPreviewSessionId = data.sessionId;
+    _previewTakeoverNotified = false;
+    const manifestUrl = `${window.location.origin}${data.manifestUrl}`;
+
+    video.muted = true;
+    video.playsInline = true;
+
+    if (window.Hls && Hls.isSupported()) {
+      _hlsPlayer = new Hls({
+        lowLatencyMode: true,
+        enableWorker: true,
+        backBufferLength: 30,
+        maxBufferLength: 8,
+      });
+      _hlsPlayer.on(Hls.Events.ERROR, (_, details) => {
+        if (details && details.fatal) {
+          _setStreamOverlayState({ error: 'Gagal memutar stream HLS.' });
+          showToast('❌ Gagal memutar stream HLS', '#DC2626');
+        }
+      });
+      _hlsPlayer.loadSource(manifestUrl);
+      _hlsPlayer.attachMedia(video);
+      _hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => {
+        _setStreamOverlayState({ loading: false, error: '' });
+        video.play().catch(() => {});
+      });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = manifestUrl;
+      video.addEventListener('loadedmetadata', () => {
+        _setStreamOverlayState({ loading: false, error: '' });
+        video.play().catch(() => {});
+      }, { once: true });
+    } else {
+      throw new Error('Browser tidak mendukung HLS');
+    }
+  } catch (error) {
+    _setStreamOverlayState({ loading: false, error: error.message || 'Gagal memutar stream' });
+    showToast(`❌ ${error.message || 'Gagal memutar stream'}`, '#DC2626');
   }
 }
 
-async function pauseRtmpPlaylist(id, name) {
-  const result = await updatePlaylistRtmpStatus(id, 'pause');
-  if (result && !result.error) {
-    showToast(`⏸ RTMP "${name}" dijeda`);
-    loadPlaylists();
-  } else {
-    showToast('❌ Gagal mengubah status RTMP', '#DC2626');
+function closeStreamPlayerModal(options = {}) {
+  const { skipServerStop = false } = options;
+
+  if (_hlsPlayer) {
+    try {
+      _hlsPlayer.destroy();
+    } catch (error) {
+      console.warn('[HLS Cleanup]', error);
+    }
+    _hlsPlayer = null;
   }
+
+  const video = document.getElementById('stream-video');
+  if (video) {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  }
+
+  if (_currentPreviewSessionId && !skipServerStop) {
+    fetch(`${API}/hls-preview/${encodeURIComponent(_currentPreviewSessionId)}/stop`, { method: 'POST' }).catch(() => {});
+  }
+  _currentPreviewSessionId = null;
+  _previewTakeoverNotified = false;
+
+  _setStreamOverlayState({ loading: false, error: '' });
+  document.getElementById('modal-stream-player')?.classList.remove('active');
 }
 
-async function submitPlayRtmp() {
-  const id = document.getElementById('play-rtmp-id')?.value;
-  const name = document.getElementById('play-rtmp-name')?.value || '';
-  const trackCount = parseInt(document.getElementById('play-rtmp-track-count')?.value || '0', 10);
-  if (!id || !name) return;
-
-  const mode = document.getElementById('play-rtmp-mode')?.value || 'single';
-  const modeHidden = document.getElementById('play-rtmp-mode');
-  if (modeHidden) modeHidden.value = mode;
-
-  const delaySeconds = parseInt(document.getElementById('play-rtmp-delay')?.value || '30', 10);
-  if (mode === 'quad' && (!Number.isFinite(delaySeconds) || delaySeconds < 1)) {
-    showToast('❌ Delay rotate harus minimal 1 detik', '#DC2626');
-    return;
-  }
-
-  if (mode === 'quad' && trackCount < 4) {
-    showToast(`❌ Mode 4 Channel butuh minimal 4 stream. Saat ini ada ${trackCount} stream.`, '#DC2626');
-    return;
-  }
-
-  await submitPlayRtmpConfirmed(mode, id, name);
-}
-
-async function submitPlayRtmpConfirmed(mode, id, name) {
-
-  const rtmpUrl = buildPlaylistRtmpUrl(name);
-
+async function pollPreviewEvents() {
+  if (!_previewClientId) return;
   try {
-    localStorage.setItem('playRtmpDelaySeconds', String(parseInt(document.getElementById('play-rtmp-delay')?.value || '30', 10)));
-    document.getElementById('play-rtmp-mode').value = mode;
-    await copyTextToClipboard(rtmpUrl);
-    const updated = await updatePlaylistRtmpStatus(id, 'play');
-    if (!updated || updated.error || !updated.success) {
-      console.error('[RTMP] gagal start', updated);
-      showToast(`❌ ${updated?.error || 'Gagal mengubah status RTMP'}`, '#DC2626');
+    const [eventsResp, activeResp] = await Promise.all([
+      fetch(`${API}/preview/events?clientId=${encodeURIComponent(_previewClientId)}`),
+      fetch(`${API}/preview/active`),
+    ]);
+
+    const eventsData = eventsResp.ok ? await eventsResp.json() : { events: [] };
+    const activeData = activeResp.ok ? await activeResp.json() : { sessionId: null };
+    const events = Array.isArray(eventsData?.events) ? eventsData.events : [];
+
+    const modalOpen = document.getElementById('modal-stream-player')?.classList.contains('active');
+    const activeSessionId = activeData?.sessionId || null;
+    if (modalOpen && _currentPreviewSessionId && activeSessionId && activeSessionId !== _currentPreviewSessionId) {
+      closeStreamPlayerModal({ skipServerStop: true });
+      if (!_previewTakeoverNotified) {
+        showToast('⚠️ Preview dibuka di device lain. Preview di device ini otomatis ditutup.', '#e67e22');
+        _previewTakeoverNotified = true;
+      }
       return;
     }
-    closePlayRtmpModal();
-    showConfirm({
-      title: 'RTMP Tersalin',
-      message: `Link RTMP untuk mode <strong>${mode === 'quad' ? '4 Channel' : 'Per Stream'}</strong> sudah tersalin ke clipboard.<br><br><div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:10px 12px;text-align:left;word-break:break-all;font-size:0.85rem;color:#0F172A">${escHtml(rtmpUrl)}</div>`,
-      confirmLabel: 'Oke',
-      confirmClass: 'btn-primary',
-      iconClass: 'fas fa-circle-check',
-      iconType: 'success',
-      hideCancel: true,
-      onConfirm: () => {}
-    });
-    showToast('✅ Link RTMP tersalin ke clipboard');
-    loadPlaylists();
+
+    for (const event of events) {
+      if (event?.type === 'preview_taken_over') {
+        if (modalOpen && _currentPreviewSessionId) {
+          closeStreamPlayerModal({ skipServerStop: true });
+        }
+        if (!_previewTakeoverNotified) {
+          showToast('⚠️ Preview dibuka di device lain. Preview di device ini otomatis ditutup.', '#e67e22');
+          _previewTakeoverNotified = true;
+        }
+      }
+    }
   } catch {
-    showToast('❌ Gagal menyalin link RTMP', '#DC2626');
+    // silent polling
   }
 }
 
@@ -391,11 +334,7 @@ function downloadPlaylistXspf(id) {
 }
 
 function toggleDurationByUrl(inputId, url) {
-  const el = document.getElementById(inputId);
-  if (!el) return;
-  const isVod = /\.mp4/i.test(url);
-  el.disabled = isVod;
-  el.title    = isVod ? 'File MP4 — durasi mengikuti file sumber, tidak bisa diubah' : '';
+  // Deprecated: duration per stream dihapus.
 }
 
 function closeAddStreamModal() {
@@ -404,7 +343,11 @@ function closeAddStreamModal() {
 
 function _mfOverlayClick(id, e) {
   if (e.target === document.getElementById(id)) {
-    document.getElementById(id).classList.remove('active');
+    if (id === 'modal-stream-player') {
+      closeStreamPlayerModal();
+    } else {
+      document.getElementById(id).classList.remove('active');
+    }
   }
 }
 
@@ -426,10 +369,6 @@ async function loadPlaylists() {
 
     const rows = playlists.map((p, idx) => {
       const trackCount  = p.track_count ?? 0;
-      const isPlaying    = Boolean(p.rtmpRunning);
-      if (p.rtmpLastError) {
-        console.error(`[RTMP] ${p.name}: ${p.rtmpLastError}`);
-      }
       const fmtDate = iso => iso ? new Date(iso).toLocaleDateString('id-ID', {
         day: '2-digit', month: 'short', year: 'numeric'
       }) : '-';
@@ -449,14 +388,9 @@ async function loadPlaylists() {
               <i class="fas fa-list"></i>
               <span class="btn-text">Stream</span>
             </button>
-            <button class="btn ${isPlaying ? 'btn-outline' : 'btn-success'} action-icon-btn" data-tooltip="${isPlaying ? 'Pause RTMP' : 'Play RTMP'}" title="${isPlaying ? 'Pause RTMP' : 'Play RTMP'}"
-              onclick="${isPlaying ? `pauseRtmpPlaylist('${p.id}', '${escAttr(p.name)}')` : `openPlayRtmpModal('${p.id}', '${escAttr(p.name)}', ${trackCount})`}">
-              <i class="fas ${isPlaying ? 'fa-pause' : 'fa-circle-play'}"></i>
-              <span class="btn-text">${isPlaying ? 'Pause RTMP' : 'Play RTMP'}</span>
-            </button>
-            <button class="btn btn-outline action-icon-btn" data-tooltip="Download xspf" title="Download xspf"
+            <button class="btn action-icon-btn btn-xspf-download" data-tooltip="Download XSPF" title="Download XSPF"
               onclick="downloadPlaylistXspf('${p.id}')">
-              <i class="fas fa-file-arrow-down"></i>
+              <i class="fas fa-download"></i>
               <span class="btn-text">Download xspf</span>
             </button>
             <button class="btn btn-danger action-icon-btn" data-tooltip="Delete" title="Delete"
@@ -471,48 +405,6 @@ async function loadPlaylists() {
 
   } catch {
     tbody.innerHTML = `<tr><td colspan="7" class="tbl-error">❌ Gagal memuat playlist.</td></tr>`;
-  }
-}
-
-// ─── EDIT PLAYLIST ────────────────────────────────────────────
-function openEditPlaylistModal(id, name, desc) {
-  document.getElementById('edit-pl-id').value   = id;
-  document.getElementById('edit-pl-name').value = name;
-  document.getElementById('edit-pl-desc').value = desc;
-  document.getElementById('modal-edit-playlist').classList.add('active');
-  setTimeout(() => document.getElementById('edit-pl-name').focus(), 80);
-}
-
-function closeEditPlaylistModal() {
-  document.getElementById('modal-edit-playlist').classList.remove('active');
-}
-
-async function submitEditPlaylist() {
-  const id   = document.getElementById('edit-pl-id').value;
-  const name = (document.getElementById('edit-pl-name').value || '').trim();
-  const desc = (document.getElementById('edit-pl-desc').value || '').trim();
-
-  if (!name) {
-    showToast('❌ Nama playlist wajib diisi!', '#c0392b');
-    return;
-  }
-
-  try {
-    const r = await fetch(`${API}/playlists/${id}`, {
-      method:  'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ name, description: desc })
-    });
-    const d = await r.json();
-    if (r.ok) {
-      showToast(`✅ Playlist berhasil diperbarui!`);
-      closeEditPlaylistModal();
-      loadPlaylists();
-    } else {
-      showToast('❌ ' + (d.error || 'Gagal memperbarui playlist'), '#DC2626');
-    }
-  } catch (e) {
-    showToast('❌ ' + (e?.message || 'Tidak bisa konek ke server'), '#DC2626');
   }
 }
 
@@ -623,14 +515,12 @@ function _processXspfContent(xmlText, fileName = '') {
   Array.from(doc.getElementsByTagNameNS(ns, 'track')).forEach((track, i) => {
     const locEl = track.getElementsByTagNameNS(ns, 'location')[0];
     const titEl = track.getElementsByTagNameNS(ns, 'title')[0];
-    const durEl = track.getElementsByTagNameNS(ns, 'duration')[0];
 
     const url      = locEl?.textContent?.trim() || '';
     const title    = titEl?.textContent?.trim() || '';
-    const duration = durEl ? parseInt(durEl.textContent) : null;
 
     if (url) {
-      tracks.push({ url, title, duration: isNaN(duration) ? null : duration });
+      tracks.push({ url, title });
     }
   });
 
@@ -696,8 +586,17 @@ async function loadPlaylistDetail(id, name, description = '') {
   localStorage.setItem('lastDetailPlaylistId', id);
   localStorage.setItem('lastDetailPlaylistName', name);
 
-  const titleEl = document.getElementById('detail-title');
-  if (titleEl) titleEl.textContent = name;
+  const titleInput = document.getElementById('detail-title-inline');
+  const descInput = document.getElementById('detail-desc-inline');
+  if (titleInput) titleInput.value = name || '';
+  if (descInput) descInput.value = description || '';
+  _originalPlaylistMeta = {
+    name: (name || '').trim(),
+    description: (description || '').trim(),
+  };
+  _playlistMetaDirty = false;
+  titleInput?.classList.remove('playlist-meta-modified');
+  descInput?.classList.remove('playlist-meta-modified');
 
   await refreshTracks();
 }
@@ -708,7 +607,7 @@ async function refreshTracks() {
 
   tbody.innerHTML = `
     <tr>
-      <td colspan="4" style="color:#888;text-align:center;padding:20px">
+      <td colspan="3" style="color:#888;text-align:center;padding:20px">
         Loading...
       </td>
     </tr>`;
@@ -723,7 +622,7 @@ async function refreshTracks() {
     if (!tracks.length) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="4" style="color:#555;text-align:center;padding:30px">
+          <td colspan="3" style="color:#555;text-align:center;padding:30px">
             Belum ada stream. Tambah di form bawah.
           </td>
         </tr>`;
@@ -731,43 +630,35 @@ async function refreshTracks() {
     }
 
     tbody.innerHTML = tracks.map((t, i) => {
-      const durSec  = t.duration ? Math.round(t.duration / 1000) : 30;
-      const isVod   = /\.mp4/i.test(t.url);
-      const durAttr = isVod
-        ? 'disabled title="File MP4 — durasi mengikuti file sumber, tidak bisa diubah"'
-        : '';
       return `
       <tr draggable="true" data-index="${i}"
         ondragstart="handleDragStart(event, ${i})"
         ondragover="handleDragOver(event)"
         ondrop="handleDrop(event, ${i})"
         ondragend="handleDragEnd(event)">
-        <td style="min-width:160px">
+        <td style="min-width:120px;width:34%">
           <input id="t-title-${i}" value="${escHtml(t.title)}" placeholder="Judul" oninput="detectTrackChange(${i})">
         </td>
-        <td>
-          <input id="t-url-${i}" value="${escHtml(t.url)}" placeholder="rtmp://..."
-            oninput="toggleDurationByUrl('t-duration-${i}', this.value); detectTrackChange(${i})">
+        <td style="width:48%">
+          <input id="t-url-${i}" value="${escHtml(t.url)}" placeholder="URL stream..."
+            oninput="detectTrackChange(${i})">
         </td>
-        <td style="width:120px">
-          <input type="number" id="t-duration-${i}" value="${durSec}" placeholder="dtk" min="1"
-            style="width:100%" ${durAttr} oninput="detectTrackChange(${i})">
-        </td>
-        <td style="white-space:nowrap;width:142px">
-          <button class="btn drag-handle" style="font-size:0.75rem;padding:5px 8px;cursor:grab"
-            onmousedown="this.style.cursor='grabbing'" onmouseup="this.style.cursor='grab'">
-            <i class="fas fa-grip-vertical"></i>
-          </button>
-          <button class="btn btn-primary"
-            style="font-size:0.75rem;padding:5px 10px;margin-left:2px"
-            onclick="saveTrack(${i})">
-            <i class="fas fa-floppy-disk"></i> Simpan
-          </button>
-          <button class="btn btn-danger"
-            style="font-size:0.75rem;padding:5px 8px;margin-left:2px"
-            onclick="deleteTrack(${i})">
-            <i class="fas fa-trash-can"></i> Hapus
-          </button>
+        <td class="track-actions-cell" style="white-space:nowrap;width:18%">
+          <div class="track-actions-wrap">
+            <button class="btn drag-handle" style="cursor:grab"
+              onmousedown="this.style.cursor='grabbing'" onmouseup="this.style.cursor='grab'">
+              <i class="fas fa-grip-vertical"></i>
+            </button>
+            <button class="btn btn-outline"
+              data-tooltip="Play Preview" title="Play Preview"
+              onclick="openStreamPlayerModal('${currentPlaylistId}', ${i}, '${escAttr(t.title)}')">
+              <i class="fas fa-play"></i> Play Preview
+            </button>
+            <button class="btn btn-danger"
+              onclick="deleteTrack(${i})">
+              <i class="fas fa-trash-can"></i> Hapus
+            </button>
+          </div>
         </td>
       </tr>`;
     }).join('');
@@ -775,7 +666,7 @@ async function refreshTracks() {
   } catch {
     tbody.innerHTML = `
       <tr>
-        <td colspan="4" style="color:#c0392b;text-align:center;padding:20px">
+        <td colspan="3" style="color:#c0392b;text-align:center;padding:20px">
           ❌ Gagal memuat daftar stream.
         </td>
       </tr>`;
@@ -788,15 +679,11 @@ function detectTrackChange(index) {
 
   const currentTitle = (document.getElementById(`t-title-${index}`)?.value || '').trim();
   const currentUrl = (document.getElementById(`t-url-${index}`)?.value || '').trim();
-  const currentDurInput = (document.getElementById(`t-duration-${index}`)?.value || '').trim();
-  const currentDur = currentDurInput ? Math.round(parseFloat(currentDurInput) * 1000) : null;
 
   const original = _originalTracks[index];
-  const originalDur = original.duration ?? null;
 
   const hasChanged = currentTitle !== original.title ||
-                     currentUrl !== original.url ||
-                     currentDur !== originalDur;
+                     currentUrl !== original.url;
 
   const row = document.querySelector(`#tracks-tbody tr[data-index="${index}"]`);
   if (!row) return;
@@ -810,70 +697,165 @@ function detectTrackChange(index) {
   }
 }
 
-// ─── ASYNC SAVE ALL TRACKS ────────────────────────────────────
-async function saveAllTracksAndNavigate(targetPage, targetData) {
-  showToast('Menyimpan perubahan...');
+function detectPlaylistMetaChange() {
+  const titleInput = document.getElementById('detail-title-inline');
+  const descInput = document.getElementById('detail-desc-inline');
+  if (!titleInput || !descInput) return;
 
-  // Snapshot indices to save (protect against changes during save)
-  const indicesToSave = Array.from(_tracksWithChanges);
-  const totalCount = indicesToSave.length;
-  let successCount = 0;
+  const name = (titleInput.value || '').trim();
+  const description = (descInput.value || '').trim();
+  const hasChanged = name !== _originalPlaylistMeta.name || description !== _originalPlaylistMeta.description;
+
+  _playlistMetaDirty = hasChanged;
+  titleInput.classList.toggle('playlist-meta-modified', hasChanged);
+  descInput.classList.toggle('playlist-meta-modified', hasChanged);
+}
+
+async function savePlaylistMetaIfNeeded() {
+  if (!currentPlaylistId || !_playlistMetaDirty) {
+    return { saved: false };
+  }
+
+  const titleInput = document.getElementById('detail-title-inline');
+  const descInput = document.getElementById('detail-desc-inline');
+  const name = (titleInput?.value || '').trim();
+  const description = (descInput?.value || '').trim();
+
+  if (!name) {
+    showToast('❌ Nama playlist wajib diisi!', '#DC2626');
+    titleInput?.focus();
+    return { saved: false, error: true };
+  }
 
   try {
-    // Save all tracks sequentially with proper error handling
-    for (const i of indicesToSave) {
-      const title = (document.getElementById(`t-title-${i}`)?.value || '').trim();
-      const url = (document.getElementById(`t-url-${i}`)?.value || '').trim();
-      const durInput = (document.getElementById(`t-duration-${i}`)?.value || '').trim();
-      const duration = durInput ? Math.round(parseFloat(durInput) * 1000) : null;
-
-      try {
-        const r = await fetch(`${API}/playlists/${currentPlaylistId}/tracks/${i}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, url, duration })
-        });
-
-        if (r.ok) {
-          // Update original and clear flag only if successful
-          _originalTracks[i] = { title, url, duration };
-          _tracksWithChanges.delete(i);
-          successCount++;
-        }
-      } catch (e) {
-        // Network error, continue to next
-      }
+    const r = await fetch(`${API}/playlists/${currentPlaylistId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description })
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      showToast('❌ ' + (d.error || 'Gagal memperbarui playlist'), '#DC2626');
+      return { saved: false, error: true };
     }
 
-    const failCount = totalCount - successCount;
-
-    if (failCount === 0) {
-      // All successful
-      showToast(`✅ Semua ${successCount} perubahan berhasil disimpan!`);
-    } else if (successCount > 0) {
-      // Partial success
-      showToast(`⚠️ ${successCount} dari ${totalCount} perubahan tersimpan`, '#e67e22');
-    } else {
-      // All failed
-      showToast(`❌ Gagal menyimpan semua perubahan`, '#DC2626');
-      return; // Don't navigate if all failed
-    }
-
-    navigate(targetPage, targetData);
-  } catch (e) {
-    showToast('❌ Error: ' + (e?.message || 'Tidak diketahui'), '#DC2626');
+    _originalPlaylistMeta = { name, description };
+    _playlistMetaDirty = false;
+    currentPlaylistName = name;
+    currentPlaylistDescription = description;
+    localStorage.setItem('lastDetailPlaylistName', name);
+    titleInput?.classList.remove('playlist-meta-modified');
+    descInput?.classList.remove('playlist-meta-modified');
+    return { saved: true };
+  } catch {
+    showToast('❌ Tidak bisa konek ke server', '#DC2626');
+    return { saved: false, error: true };
   }
+}
+
+// ─── ASYNC SAVE ALL TRACKS ────────────────────────────────────
+async function _saveTracksByIndices(indices, successLabel = 'perubahan') {
+  const uniqueIndices = [...new Set(indices)].sort((a, b) => a - b);
+  if (!uniqueIndices.length) {
+    showToast('Tidak ada data untuk disimpan');
+    return { successCount: 0, totalCount: 0 };
+  }
+
+  showToast('Menyimpan perubahan...');
+
+  let successCount = 0;
+
+  for (const i of uniqueIndices) {
+    const title = (document.getElementById(`t-title-${i}`)?.value || '').trim();
+    const url = (document.getElementById(`t-url-${i}`)?.value || '').trim();
+
+    if (!title || !url) {
+      showToast(`❌ Baris ${i + 1} masih kosong. Lengkapi dulu sebelum simpan.`, '#DC2626');
+      return { successCount, totalCount: uniqueIndices.length, aborted: true };
+    }
+
+    try {
+      const r = await fetch(`${API}/playlists/${currentPlaylistId}/tracks/${i}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, url })
+      });
+
+      if (r.ok) {
+        _originalTracks[i] = { title, url };
+        _tracksWithChanges.delete(i);
+        const row = document.querySelector(`#tracks-tbody tr[data-index="${i}"]`);
+        if (row) row.classList.remove('track-modified');
+        successCount++;
+      }
+    } catch {
+      // lanjut ke baris berikutnya
+    }
+  }
+
+  const totalCount = uniqueIndices.length;
+  const failCount = totalCount - successCount;
+
+  if (failCount === 0) {
+    showToast(`✅ Semua ${successCount} ${successLabel} berhasil disimpan!`);
+  } else if (successCount > 0) {
+    showToast(`⚠️ ${successCount} dari ${totalCount} ${successLabel} tersimpan`, '#e67e22');
+  } else {
+    showToast(`❌ Gagal menyimpan ${successLabel}`, '#DC2626');
+  }
+
+  return { successCount, totalCount, failCount };
+}
+
+async function saveAllTracks() {
+  if (!currentPlaylistId) return;
+  const metaResult = await savePlaylistMetaIfNeeded();
+  if (metaResult?.error) return;
+
+  const indices = Array.from(document.querySelectorAll('#tracks-tbody tr[data-index]'))
+    .map(row => Number(row.dataset.index))
+    .filter(index => Number.isInteger(index));
+
+  if (!indices.length) {
+    if (metaResult?.saved) showToast('✅ Playlist berhasil diperbarui!');
+    else showToast('Tidak ada data untuk disimpan');
+    return;
+  }
+
+  await _saveTracksByIndices(indices, 'stream');
+}
+
+async function saveAllTracksAndNavigate(targetPage, targetData) {
+  const metaResult = await savePlaylistMetaIfNeeded();
+  if (metaResult?.error) return;
+
+  const indicesToSave = Array.from(_tracksWithChanges);
+  if (!indicesToSave.length) {
+    navigate(targetPage, targetData);
+    return;
+  }
+
+  const result = await _saveTracksByIndices(indicesToSave, 'perubahan');
+  if (result && result.totalCount > 0 && result.successCount === 0) return;
+  navigate(targetPage, targetData);
 }
 
 // ─── UNSAVED CHANGES MODAL ────────────────────────────────────
 function showUnsavedChangesModal(targetPage, targetData) {
-  const changedList = [..._tracksWithChanges].map(i => {
+  const changedTrackList = [..._tracksWithChanges].map(i => {
     const title = document.getElementById(`t-title-${i}`)?.value || 'Untitled';
     const url = document.getElementById(`t-url-${i}`)?.value || '-';
     return `<li style="font-size:0.85em;margin-bottom:6px"><strong>${escHtml(title)}</strong><br><span style="color:#666;font-size:0.8em">${escHtml(url.substring(0, 60))}${url.length > 60 ? '...' : ''}</span></li>`;
-  }).join('');
+  });
 
-  const message = `<strong>${_tracksWithChanges.size} perubahan</strong> akan hilang jika tidak disimpan:<ul style="margin:8px 0 0 0;padding-left:18px;text-align:left">${changedList}</ul><br><em style="color:#666;font-size:0.85em">💡 Simpan dulu perubahan ini sebelum lanjut ke halaman lain.</em>`;
+  const changedItems = [];
+  if (_playlistMetaDirty) {
+    changedItems.push('<li style="font-size:0.85em;margin-bottom:6px"><strong>Metadata Playlist</strong><br><span style="color:#666;font-size:0.8em">Nama/Deskripsi playlist belum disimpan</span></li>');
+  }
+  changedItems.push(...changedTrackList);
+
+  const totalChanges = _tracksWithChanges.size + (_playlistMetaDirty ? 1 : 0);
+  const message = `<strong>${totalChanges} perubahan</strong> akan hilang jika tidak disimpan:<ul style="margin:8px 0 0 0;padding-left:18px;text-align:left">${changedItems.join('')}</ul><br><em style="color:#666;font-size:0.85em">💡 Simpan dulu perubahan ini sebelum lanjut ke halaman lain.</em>`;
 
   showConfirm({
     title: 'Perubahan Belum Disimpan',
@@ -885,37 +867,6 @@ function showUnsavedChangesModal(targetPage, targetData) {
     onConfirm: () => saveAllTracksAndNavigate(targetPage, targetData),
     onCancel: () => {} // Just close, stay on page
   });
-}
-
-async function saveTrack(i) {
-  const title    = document.getElementById(`t-title-${i}`)?.value    || '';
-  const url      = document.getElementById(`t-url-${i}`)?.value      || '';
-  const durInput = (document.getElementById(`t-duration-${i}`)?.value || '').trim();
-  const duration = durInput ? Math.round(parseFloat(durInput) * 1000) : null;
-
-  if (!title || !url) {
-    showToast('❌ Judul dan URL tidak boleh kosong!', '#c0392b');
-    return;
-  }
-
-  try {
-    const r = await fetch(`${API}/playlists/${currentPlaylistId}/tracks/${i}`, {
-      method:  'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ title, url, duration })
-    });
-    if (r.ok) {
-      showToast('✅ Stream berhasil diperbarui!');
-      // Update original tracks and clear modified flag
-      _originalTracks[i] = { title, url, duration };
-      _tracksWithChanges.delete(i);
-      const row = document.querySelector(`#tracks-tbody tr[data-index="${i}"]`);
-      if (row) row.classList.remove('track-modified');
-    }
-    else      showToast('❌ Gagal memperbarui stream', '#c0392b');
-  } catch {
-    showToast('❌ Tidak bisa konek ke server', '#c0392b');
-  }
 }
 
 async function deleteTrack(i) {
@@ -953,79 +904,9 @@ async function moveTrack(fromIdx, toIdx) {
   }
 }
 
-// ─── SET ALL DURATION ─────────────────────────────────────────
-function openSetAllDurationModal() {
-  document.getElementById('set-all-duration-input').value = '';
-  document.getElementById('modal-set-all-duration').classList.add('active');
-  setTimeout(() => document.getElementById('set-all-duration-input').focus(), 50);
-}
-
-function closeSetAllDurationModal() {
-  document.getElementById('modal-set-all-duration').classList.remove('active');
-}
-
-async function submitSetAllDuration() {
-  const val = (document.getElementById('set-all-duration-input')?.value || '').trim();
-  const sec = parseFloat(val);
-  if (!val || isNaN(sec) || sec < 1) {
-    showToast('❌ Masukkan durasi yang valid (min. 1 detik)', '#c0392b');
-    return;
-  }
-  const durationMs = Math.round(sec * 1000);
-
-  // Kumpulkan semua track dari tabel
-  const tracks = [];
-  let i = 0;
-  while (document.getElementById(`t-url-${i}`)) {
-    const url   = document.getElementById(`t-url-${i}`).value || '';
-    const title = document.getElementById(`t-title-${i}`).value || '';
-    tracks.push({ index: i, url, title, isVod: /\.mp4/i.test(url) });
-    i++;
-  }
-
-  const nonVodTracks = tracks.filter(t => !t.isVod);
-  if (!nonVodTracks.length) {
-    showToast('⚠️ Semua track adalah MP4 — tidak ada yang diubah', '#e67e22');
-    closeSetAllDurationModal();
-    return;
-  }
-
-  closeSetAllDurationModal();
-
-  try {
-    await Promise.all(nonVodTracks.map(t =>
-      fetch(`${API}/playlists/${currentPlaylistId}/tracks/${t.index}`, {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ title: t.title, url: t.url, duration: durationMs })
-      })
-    ));
-    refreshTracks();
-
-    const hasVod    = tracks.length !== nonVodTracks.length;
-    const mp4Warn   = hasVod
-      ? `<br><br><i class="fas fa-triangle-exclamation" style="color:#f59e0b"></i> <strong>Track MP4 tidak ikut berubah</strong> — durasi mengikuti file sumber secara otomatis.`
-      : '';
-
-    showConfirm({
-      title:        'Durasi Diperbarui',
-      message:      `Durasi <strong>${sec} detik</strong> diterapkan ke <strong>${nonVodTracks.length} stream</strong>.${mp4Warn}`,
-      confirmLabel: 'Mengerti',
-      confirmClass: 'btn-primary',
-      iconClass:    'fas fa-circle-check',
-      iconType:     'success',
-      onConfirm:    () => {}
-    });
-  } catch {
-    showToast('❌ Gagal memperbarui beberapa stream', '#DC2626');
-  }
-}
-
 async function addTrack() {
   const title    = (document.getElementById('add-title')?.value    || '').trim();
   const url      = (document.getElementById('add-url')?.value      || '').trim();
-  const durInput = (document.getElementById('add-duration')?.value || '').trim();
-  const duration = durInput ? Math.round(parseFloat(durInput) * 1000) : null;
 
   if (!title || !url) {
     showToast('❌ Judul dan URL wajib diisi!', '#c0392b');
@@ -1036,13 +917,12 @@ async function addTrack() {
     const r = await fetch(`${API}/playlists/${currentPlaylistId}/tracks`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ title, url, duration })
+      body:    JSON.stringify({ title, url })
     });
 
     if (r.ok) {
       document.getElementById('add-title').value    = '';
       document.getElementById('add-url').value      = '';
-      document.getElementById('add-duration').value = '';
       closeAddStreamModal();
       showToast('✅ Stream berhasil ditambahkan!');
       refreshTracks();
@@ -1107,7 +987,7 @@ function filterPlaylists() {
     if (!existing) {
       const tr = document.createElement('tr');
       tr.id = 'pl-empty-search';
-      tr.innerHTML = `<td colspan="6" class="tbl-empty" style="padding:40px">
+      tr.innerHTML = `<td colspan="7" class="tbl-empty" style="padding:40px">
         <i class="fas fa-magnifying-glass"></i>
         <p>Tidak ada hasil untuk <strong>"${escHtml(q)}"</strong></p>
       </td>`;
@@ -1135,7 +1015,7 @@ function filterTracks() {
     if (!existing) {
       const tr = document.createElement('tr');
       tr.id = 'track-empty-search';
-      tr.innerHTML = `<td colspan="4" class="tbl-empty" style="padding:40px">
+      tr.innerHTML = `<td colspan="3" class="tbl-empty" style="padding:40px">
         <i class="fas fa-magnifying-glass"></i>
         <p>Tidak ada hasil untuk <strong>"${escHtml(q)}"</strong></p>
       </td>`;
@@ -1157,9 +1037,7 @@ async function _routeFromPath() {
   }
 
   if (!path || path === 'dashboard') {
-    const saved    = localStorage.getItem('lastPage') || 'dashboard';
-    const lastPage = document.getElementById(`page-${saved}`) ? saved : 'dashboard';
-    navigate(lastPage);
+    navigate('dashboard');
   } else if (path === 'playlists') {
     navigate('playlists');
   } else {
@@ -1180,6 +1058,9 @@ async function _routeFromPath() {
 // ─── INIT ─────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   _routeFromPath();
+  if (!_previewEventTimer) {
+    _previewEventTimer = setInterval(pollPreviewEvents, 1200);
+  }
 });
 
 window.addEventListener('popstate', _routeFromPath);
